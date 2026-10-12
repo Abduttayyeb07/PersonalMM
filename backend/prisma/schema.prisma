@@ -1,0 +1,120 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String               @id @default(uuid())
+  email        String               @unique
+  passwordHash String               @map("password_hash")
+  createdAt    DateTime             @default(now()) @map("created_at")
+  credentials  ExchangeCredential[]
+  orders       Order[]
+  balances     Balance[]
+  executions   ExecutionLog[]
+  credentialAudits CredentialAudit[]
+
+  @@map("users")
+}
+
+model ExchangeCredential {
+  id                  String   @id @default(uuid())
+  userId              String   @map("user_id")
+  exchange            String
+  encryptedApiKey     String   @map("encrypted_api_key")
+  encryptedApiSecret  String   @map("encrypted_api_secret")
+  encryptedPassphrase String?  @map("encrypted_passphrase")
+  keyHint             String?  @map("key_hint")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, exchange])
+  @@map("exchange_credentials")
+}
+
+model CredentialAudit {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  exchange  String
+  action    String
+  ip        String?
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("credential_audits")
+}
+
+model Order {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  exchange        String
+  symbol          String
+  side            String
+  type            String
+  quantity        Decimal  @db.Decimal(20, 8)
+  price           Decimal? @db.Decimal(20, 8)
+  status          String   @default("pending")
+  exchangeOrderId String?  @map("exchange_order_id")
+  filledQuantity  Decimal  @default(0) @map("filled_quantity") @db.Decimal(20, 8)
+  avgPrice        Decimal? @map("avg_price") @db.Decimal(20, 8)
+  clientOrderId   String   @map("client_order_id")
+  notionalUsdt    Decimal  @map("notional_usdt") @db.Decimal(20, 8)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, exchange, clientOrderId])
+  @@map("orders")
+}
+
+model Balance {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  exchange  String
+  asset     String
+  free      Decimal  @db.Decimal(20, 8)
+  locked    Decimal  @default(0) @db.Decimal(20, 8)
+  updatedAt DateTime @updatedAt @map("updated_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, exchange, asset])
+  @@map("balances")
+}
+
+model RevokedToken {
+  jti       String   @id               // JWT ID — unique per token
+  expiresAt DateTime @map("expires_at") // auto-cleanup when past this date
+  revokedAt DateTime @default(now()) @map("revoked_at")
+
+  @@map("revoked_tokens")
+}
+
+model ExecutionLog {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  exchange        String
+  symbol          String
+  action          String                      // placeOrder | cancelOrder
+  side            String?
+  type            String?
+  quantity        String?
+  price           String?
+  quoteQty        String?  @map("quote_qty")
+  clientOrderId   String?  @map("client_order_id")
+  exchangeOrderId String?  @map("exchange_order_id")
+  status          String   @default("PENDING") // PENDING | SUCCESS | FAILED
+  errorMessage    String?  @map("error_message")
+  latencyMs       Int?     @map("latency_ms")
+  createdAt       DateTime @default(now()) @map("created_at")
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, exchange])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("execution_logs")
+}

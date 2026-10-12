@@ -1,0 +1,19 @@
+node_modules/
+dist/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Prisma generated
+/generated/prisma
+node_modules/.prisma
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db

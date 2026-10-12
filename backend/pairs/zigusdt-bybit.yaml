@@ -1,0 +1,29 @@
+# pairs/zigusdt-bybit.yaml  (one file per pair). Changed only by a reviewed commit.
+# Money settings need two approvers; the approved hash lives in pairs/approvals.json.
+pair_id: ZIGUSDT-BYBIT
+venue: bybit
+symbol: ZIGUSDT
+base_asset: ZIG
+quote_asset: USDT
+base_price: 0.0600        # P0, set by leadership
+floor_price: 0.0500       # lowest rung allowed (needs confirmation)
+top_price: 0.1000         # highest rung allowed (needs confirmation)
+step: 0.03                # 3% between rungs in one ladder
+ladders:
+  - name: A
+    offset: 0.000
+  - name: B
+    offset: 0.015         # 1.5% above ladder A
+rung_size_base: 12500
+max_base_owed: 587500     # hard cap, checked by the risk gate
+dust_tolerance_base: 1    # rounding allowed in invariant I1
+dust_tolerance_quote: 0.05  # rounding allowed in I3
+# fee rate, fee asset, tick, lot, min order value: pulled from the venue, never typed
+self_tuning_bounds:       # level 2 self-tuning may move these only within range
+  peg_requote_seconds: [2, 30]
+  armed_rungs_max: [10, 47]
+  rest_poll_seconds: [10, 60]
+onboarding:               # spec defaults, confirm or change
+  max_tick_pct_of_floor: 0.1
+  max_rung_pct_of_hourly_volume: 5
+  min_order_value_multiple: 2

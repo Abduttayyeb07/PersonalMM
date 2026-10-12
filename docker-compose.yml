@@ -1,0 +1,106 @@
+services:
+  # ── Database ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: zig_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ziguser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a strong unique value}
+      POSTGRES_DB: ${POSTGRES_DB:-zigdb}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-ziguser} -d ${POSTGRES_DB:-zigdb}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Backend (NestJS) ──────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: zig_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      PORT: 3069
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ziguser}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zigdb}
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENCRYPTION_KEY_PREV: ${ENCRYPTION_KEY_PREV:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      REQUIRE_IP_WHITELIST: ${REQUIRE_IP_WHITELIST:-true}
+      TRADING_ENABLED: ${TRADING_ENABLED:-false}
+      MAX_ORDER_USDT: ${MAX_ORDER_USDT:-100}
+      MAX_DAILY_USDT: ${MAX_DAILY_USDT:-500}
+      MAX_PRICE_DEVIATION_PCT: ${MAX_PRICE_DEVIATION_PCT:-10}
+      MAX_SLIPPAGE_PCT: ${MAX_SLIPPAGE_PCT:-2}
+      APP_ORIGIN: ${APP_ORIGIN:-http://127.0.0.1:3070}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      # Bind inside the container on all interfaces; the host port mapping below is loopback-only.
+      HOST: 0.0.0.0
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ADMIN_ID: ${TELEGRAM_ADMIN_ID}
+      BYBIT_WS_HOST: ${BYBIT_WS_HOST:-wss://stream.bybit.com}
+    ports:
+      # loopback-only: reachable from the host reverse proxy, never the public internet.
+      # With a domain, the proxy routes /api and /socket.io on APP_ORIGIN -> 127.0.0.1:3069
+      - '127.0.0.1:3069:3069'
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: builder
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ziguser}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zigdb}
+    command: ['npm', 'exec', 'prisma', 'migrate', 'deploy']
+
+  # ── Telegram Bot ─────────────────────────────────────────────────────────
+  bot:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.bot
+    container_name: zig_bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ziguser}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zigdb}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ADMIN_ID: ${TELEGRAM_ADMIN_ID}
+
+  # ── Frontend (Next.js) ────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
+    container_name: zig_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      HOSTNAME: '0.0.0.0'  # required for Next.js standalone to bind on all interfaces
+      PORT: 3070
+    ports:
+      # loopback-only: served publicly (if at all) via the reverse proxy on APP_ORIGIN
+      - '127.0.0.1:3070:3070'
+
+volumes:
+  postgres_data:

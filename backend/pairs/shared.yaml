@@ -1,0 +1,9 @@
+# shared.yaml (all pairs)
+max_quote_on_venue_usd:
+  bybit: null             # leadership to set
+max_live_pairs_per_key: null  # leadership to set
+weekly_sweep: "MON 00:00 UTC"
+lease_ttl_seconds: 15
+heartbeat_seconds: 10
+invariant_check_seconds: 60
+feed_stale_seconds: 60
