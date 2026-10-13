@@ -187,6 +187,12 @@ bot.catch((err: any, ctx: any) => {
 async function main() {
   await prisma.$connect();
   console.log('[bot] Connected to database');
+
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
+    console.log('[bot] TELEGRAM_BOT_TOKEN not set — Telegram bot disabled, idling');
+    return;
+  }
+
   console.log('[bot] Starting polling…');
   bot.launch();
   process.once('SIGINT',  () => { bot.stop('SIGINT');  prisma.$disconnect(); });

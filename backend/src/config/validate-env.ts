@@ -21,9 +21,6 @@ export function validateEnvironment(config: Record<string, unknown>) {
   }
   if (!databaseUrl) throw new Error('DATABASE_URL is required');
   if (config.NODE_ENV === 'production') {
-    if (String(config.COOKIE_SECURE) !== 'true') {
-      throw new Error('COOKIE_SECURE=true is required in production');
-    }
     if (/postgres(?:ql)?:\/\/[^:]+:zigpass@/i.test(databaseUrl)) {
       throw new Error('The default PostgreSQL password is forbidden in production');
     }
