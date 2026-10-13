@@ -72,21 +72,6 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zig_grid}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zig_grid_engine}
     command: ['npm', 'exec', 'prisma', 'migrate', 'deploy']
 
-  # ── Telegram Bot ─────────────────────────────────────────────────────────
-  bot:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.bot
-    container_name: zig_grid_bot
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-zig_grid}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zig_grid_engine}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_ADMIN_ID: ${TELEGRAM_ADMIN_ID}
-
   # ── Frontend (Next.js) ────────────────────────────────────────────────────
   frontend:
     build:
