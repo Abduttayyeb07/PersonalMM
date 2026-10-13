@@ -16,3 +16,4 @@ prettier.config*
 .prettierrc*
 jest.config*
 tsconfig.build.json
+engine-data

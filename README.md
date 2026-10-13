@@ -155,9 +155,9 @@ Keys are encrypted with AES-256-GCM before being stored in the database.
 | `PORT` | No | Backend port (default `3069`) |
 | `NEXT_PUBLIC_API_URL` | Yes | Backend REST URL seen by browser |
 | `NEXT_PUBLIC_WS_URL` | Yes | Backend WebSocket URL seen by browser |
-| `POSTGRES_USER` | No | Docker Compose DB user (default `ziguser`) |
+| `POSTGRES_USER` | No | Docker Compose DB user (default `zig_grid`) |
 | `POSTGRES_PASSWORD` | Yes | Strong Docker Compose DB password; there is no fallback |
-| `POSTGRES_DB` | No | Docker Compose DB name (default `zigdb`) |
+| `POSTGRES_DB` | No | Docker Compose DB name (default `zig_grid_engine`) |
 
 ---
 

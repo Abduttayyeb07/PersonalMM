@@ -3,7 +3,7 @@ import { validateEnvironment } from './validate-env';
 const valid = {
   ENCRYPTION_KEY: 'a'.repeat(64),
   JWT_SECRET: 'a-secure-random-secret-with-more-than-32-characters',
-  DATABASE_URL: 'postgresql://ziguser:strong-password@postgres:5432/zigdb',
+  DATABASE_URL: 'postgresql://zig_grid:strong-password@postgres:5432/zig_grid_engine',
   NODE_ENV: 'development',
 };
 

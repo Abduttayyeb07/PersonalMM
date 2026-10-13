@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { useAuthStore } from '../store/auth';
 import { listCredentials } from '../lib/api';
 import LoginForm from '../components/LoginForm';
-import Console from '../components/console/Console';
+import SeriesConsole from '../components/series/SeriesConsole';
 
 type AppState = 'loading' | 'auth' | 'dashboard';
 
@@ -40,5 +40,5 @@ export default function Home() {
   }
 
   if (appState === 'auth') return <LoginForm />;
-  return <Console />;
+  return <SeriesConsole />;
 }

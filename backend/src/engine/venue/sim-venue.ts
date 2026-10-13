@@ -37,6 +37,8 @@ export interface SimOptions {
   /** Whether the published book shows our own resting orders (true on a real exchange). Tests can turn
    * this off to model a lagging public feed. */
   ownOrdersInBook?: boolean;
+  /** Prefix for order and fill ids, so a restarted venue never reuses an id an earlier instance issued. */
+  idPrefix?: string;
 }
 
 /**
@@ -142,7 +144,7 @@ export class SimVenue implements VenueAdapter {
     if (req.side === 'BUY' && this.quote.minus(this.lockedQuote()).lt(req.price.mul(req.qty))) {
       return { ok: false, reason: 'INSUFFICIENT_BALANCE', message: 'quote' };
     }
-    const orderId = `sim-${++this.seq}`;
+    const orderId = `${this.o.idPrefix ?? 'sim'}-${++this.seq}`;
     this.orders.set(req.clientOrderId, {
       clientOrderId: req.clientOrderId, orderId, side: req.side, price: req.price, qty: req.qty, filled: new Decimal(0), status: 'OPEN',
     });
@@ -238,7 +240,7 @@ export class SimVenue implements VenueAdapter {
     o.filled = o.filled.plus(qty);
     if (o.filled.gte(o.qty)) o.status = 'FILLED';
     const fill: Fill = {
-      fillId: `sim-fill-${++this.seq}`, clientOrderId: o.clientOrderId, orderId: o.orderId, side: o.side,
+      fillId: `${this.o.idPrefix ?? 'sim'}-fill-${++this.seq}`, clientOrderId: o.clientOrderId, orderId: o.orderId, side: o.side,
       price: o.price, qty, feeAmount, feeAsset, ts: this.o.clock.now(),
     };
     this.fills.push(fill);

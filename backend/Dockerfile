@@ -28,6 +28,11 @@ COPY --from=builder /app/node_modules/.prisma        ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
 # Copy compiled output
 COPY --from=builder /app/dist ./dist
+# Engine pair configs and its plain-SQL migrations are read at runtime
+COPY --from=builder /app/pairs ./pairs
+COPY --from=builder /app/sql ./sql
+# Admin helper: create a login (no public sign-up)
+COPY --from=builder /app/scripts/create-user.js ./scripts/create-user.js
 
 EXPOSE 3069
 

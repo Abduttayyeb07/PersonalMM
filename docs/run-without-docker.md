@@ -12,8 +12,8 @@ Everything binds to `127.0.0.1`, so the app is only reachable from the machine i
 Create a dedicated, non-superuser role that owns only this database:
 
 ```powershell
-psql -U postgres -c "CREATE ROLE ziguser LOGIN PASSWORD 'choose-a-strong-password' NOSUPERUSER NOCREATEDB NOCREATEROLE;"
-psql -U postgres -c "CREATE DATABASE zigdb OWNER ziguser;"
+psql -U postgres -c "CREATE ROLE zig_grid LOGIN PASSWORD 'choose-a-strong-password' NOSUPERUSER NOCREATEDB NOCREATEROLE;"
+psql -U postgres -c "CREATE DATABASE zig_grid_engine OWNER zig_grid;"
 ```
 
 Keep Postgres on `listen_addresses = 'localhost'` (the default).
@@ -28,7 +28,7 @@ copy .env.example .env
 Edit `backend/.env`:
 
 ```env
-DATABASE_URL="postgresql://ziguser:choose-a-strong-password@127.0.0.1:5432/zigdb"
+DATABASE_URL="postgresql://zig_grid:choose-a-strong-password@127.0.0.1:5432/zig_grid_engine"
 JWT_SECRET="<32+ random characters>"
 ENCRYPTION_KEY="<64 hex chars>"
 NODE_ENV=development

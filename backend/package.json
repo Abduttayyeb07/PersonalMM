@@ -21,7 +21,8 @@
     "bot": "ts-node bot/index.ts",
     "rotate-encryption-key": "ts-node scripts/rotate-encryption-key.ts",
     "engine": "ts-node scripts/engine.ts",
-    "spec-audit": "ts-node scripts/spec-audit.ts"
+    "spec-audit": "ts-node scripts/spec-audit.ts",
+    "series-backtest": "ts-node scripts/series-backtest.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

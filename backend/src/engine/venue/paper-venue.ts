@@ -17,9 +17,9 @@ export class PaperVenue implements VenueAdapter {
   private chain: Promise<void> = Promise.resolve();
 
   constructor(private readonly o: {
-    symbol: string; specs: VenueSpecs; clock: Clock; log: Logger; startBase: Decimal; startQuote: Decimal; startPrice: Decimal;
+    symbol: string; specs: VenueSpecs; clock: Clock; log: Logger; startBase: Decimal; startQuote: Decimal; startPrice: Decimal; idPrefix?: string;
   }) {
-    this.sim = new SimVenue({ specs: o.specs, clock: o.clock, startBase: o.startBase, startQuote: o.startQuote, startPrice: o.startPrice });
+    this.sim = new SimVenue({ specs: o.specs, clock: o.clock, startBase: o.startBase, startQuote: o.startQuote, startPrice: o.startPrice, idPrefix: o.idPrefix });
   }
 
   /** Every order, cancel and fill of this run, for the spec auditor. */
