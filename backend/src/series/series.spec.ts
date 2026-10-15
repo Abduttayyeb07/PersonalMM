@@ -366,3 +366,12 @@ describe('buy-first series (the mirror)', () => {
     }
   });
 });
+
+describe('percentages with decimals', () => {
+  it('accepts up to 2 decimals (1.5, 1.75, 1.9) and refuses more', () => {
+    const s = { ...defaultSeriesSettings(), basePrice: '0.059', sellPct: '100', firstSellPct: '1.5', stepPct: '0.75', buybackPct: '1.75', resellPct: '1.9' };
+    const plan = buildPlan(s, D('0.058'), BYBIT_ZIG_SPECS);
+    expect(plan.orders[0].price.toFixed()).toBe('0.05989'); // 0.059 x 1.015, rounded up to the tick
+    expect(() => buildPlan({ ...s, buybackPct: '1.755' }, D('0.058'), BYBIT_ZIG_SPECS)).toThrow(/2 decimals/);
+  });
+});

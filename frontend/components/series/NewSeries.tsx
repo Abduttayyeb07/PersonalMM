@@ -42,6 +42,33 @@ function Field({ id, label, hint, value, onChange, suffix, placeholder }: {
   );
 }
 
+/** Accepts what a percentage can become while typing: up to 2 digits, a point, up to 2 decimals. */
+const PCT_PATTERN = /^\d{0,2}(\.\d{0,2})?$/;
+
+function PctField({ id, label, value, onChange, presets }: {
+  id: keyof Draft; label: string; value: string; onChange: (v: string) => void; presets: string[];
+}) {
+  return (
+    <div className="c-field">
+      <label htmlFor={`series-${id}`}>{label}</label>
+      <div className="relative">
+        <input id={`series-${id}`} className="c-input num" inputMode="decimal" value={value} style={{ paddingRight: 64 }}
+               onChange={(e) => { const v = e.target.value.replace(',', '.'); if (PCT_PATTERN.test(v)) onChange(v); }} />
+        <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[13px]" style={{ color: 'var(--muted)' }}>%</span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label={`${label}: quick values`}>
+        {presets.map((p) => (
+          <button key={p} type="button" className="s-chip num" aria-pressed={Number(value) === Number(p)} onClick={() => onChange(p)}>{p}%</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const FIRST_PRESETS = ['1', '1.5', '2', '2.5', '3'];
+const STEP_PRESETS = ['0.5', '0.75', '1', '1.5', '2'];
+const LOOP_PRESETS = ['1.5', '1.75', '1.9', '2', '2.5', '3'];
+
 const DIRECTIONS: Array<{ id: SeriesDirection; title: string; line: string }> = [
   { id: 'SELL_FIRST', title: 'Sell first', line: 'Start with ZIG. Sells above the base; earns when ZIG rises and comes back.' },
   { id: 'BUY_FIRST', title: 'Buy first', line: 'Start with USDT. Buys below the base; earns when ZIG dips and comes back.' },
@@ -125,17 +152,17 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
             <Field id="sellPct" label={w.buy ? 'Share of USDT used' : 'Share of ZIG for sale'} value={draft.sellPct} onChange={set('sellPct')} suffix="%"
                    hint={w.buy ? '100% spreads all of it over the buys.' : '100% puts all of it into the sells.'} />
             <Field id="orders" label={`Number of ${w.opening}`} value={draft.orders} onChange={set('orders')} />
-            <Field id="firstSellPct" label={w.buy ? 'First buy below base' : 'First sell above base'} value={draft.firstSellPct} onChange={set('firstSellPct')} suffix="%" />
-            <Field id="stepPct" label={w.buy ? 'Each next buy below the last' : 'Each next sell above the last'} value={draft.stepPct} onChange={set('stepPct')} suffix="%" />
+            <PctField id="firstSellPct" label={w.buy ? 'First buy below base' : 'First sell above base'} value={draft.firstSellPct} onChange={set('firstSellPct')} presets={FIRST_PRESETS} />
+            <PctField id="stepPct" label={w.buy ? 'Each next buy below the last' : 'Each next sell above the last'} value={draft.stepPct} onChange={set('stepPct')} presets={STEP_PRESETS} />
             {w.buy ? (
               <>
-                <Field id="resellPct" label="Sell-back above each filled buy" value={draft.resellPct} onChange={set('resellPct')} suffix="%" />
-                <Field id="buybackPct" label="Re-buy below each filled sell-back" value={draft.buybackPct} onChange={set('buybackPct')} suffix="%" />
+                <PctField id="resellPct" label="Sell-back above each filled buy" value={draft.resellPct} onChange={set('resellPct')} presets={LOOP_PRESETS} />
+                <PctField id="buybackPct" label="Re-buy below each filled sell-back" value={draft.buybackPct} onChange={set('buybackPct')} presets={LOOP_PRESETS} />
               </>
             ) : (
               <>
-                <Field id="buybackPct" label="Buyback below each filled sell" value={draft.buybackPct} onChange={set('buybackPct')} suffix="%" />
-                <Field id="resellPct" label="Re-sell above each filled buyback" value={draft.resellPct} onChange={set('resellPct')} suffix="%" />
+                <PctField id="buybackPct" label="Buyback below each filled sell" value={draft.buybackPct} onChange={set('buybackPct')} presets={LOOP_PRESETS} />
+                <PctField id="resellPct" label="Re-sell above each filled buyback" value={draft.resellPct} onChange={set('resellPct')} presets={LOOP_PRESETS} />
               </>
             )}
             <Field id="maxHours" label="Stop by itself after" value={draft.maxHours} onChange={set('maxHours')} suffix="hours" placeholder="never" hint="Optional. Empty runs until you stop it." />

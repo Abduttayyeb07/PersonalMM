@@ -77,6 +77,10 @@ export function buildPlan(s: SeriesSettings, marketPrice: Decimal, specs: VenueS
   if (step.lt('0.1') || step.gt(20)) throw new SeriesSettingsError(`Step between ${buyFirst ? 'buys' : 'sells'} must be 0.1% to 20%`);
   if (buyback.lt('0.5') || buyback.gt(30)) throw new SeriesSettingsError(`${buyFirst ? 'Re-buy must be 0.5% to 30% below the sell-back' : 'Buyback must be 0.5% to 30% below the sell'}`);
   if (resell.lt('0.5') || resell.gt(30)) throw new SeriesSettingsError(`${buyFirst ? 'Sell-back must be 0.5% to 30% above the buy' : 'Re-sell must be 0.5% to 30% above the buyback'}`);
+  // Percentages take at most two decimals (1.5, 1.75, 1.9): finer steps only add noise.
+  for (const [v, name] of [[first, 'first'], [step, 'step'], [buyback, buyFirst ? 're-buy' : 'buyback'], [resell, buyFirst ? 'sell-back' : 're-sell']] as const) {
+    if (v.decimalPlaces() > 2) throw new SeriesSettingsError(`The ${name} percentage can have at most 2 decimals, like 1.75`);
+  }
   if (base.lte(0)) throw new SeriesSettingsError('Base price must be positive');
   if (s.maxCycles !== null && (!Number.isInteger(s.maxCycles) || s.maxCycles < 1)) throw new SeriesSettingsError('Stop after cycles must be a whole number of at least 1');
   if (s.maxHours !== null && (!(s.maxHours > 0) || s.maxHours > 24 * 90)) throw new SeriesSettingsError('Stop after hours must be between 0 and 2160');
