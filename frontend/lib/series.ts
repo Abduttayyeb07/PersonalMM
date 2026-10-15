@@ -1,7 +1,11 @@
 import api from './api';
 
 /** What the user chooses when starting a series. Numbers travel as strings to stay exact. */
+/** Sell first: sells above the base, buybacks below them. Buy first (the mirror): buys below, sell-backs above. */
+export type SeriesDirection = 'SELL_FIRST' | 'BUY_FIRST';
+
 export interface SeriesSettings {
+  direction?: SeriesDirection;
   totalZig: string;
   startUsdt: string;
   basePrice: string | null;
@@ -15,7 +19,7 @@ export interface SeriesSettings {
   maxHours: number | null;
 }
 
-export type OrderKind = 'FIRST_SELL' | 'BUYBACK' | 'RESELL';
+export type OrderKind = 'FIRST_SELL' | 'BUYBACK' | 'RESELL' | 'FIRST_BUY' | 'SELLBACK' | 'REBUY';
 export type SeriesStatus = 'STARTING' | 'RUNNING' | 'PAUSED' | 'HALTED' | 'STOPPED';
 
 export interface SeriesOrder {
@@ -30,6 +34,7 @@ export interface SeriesOrder {
   status: 'OPEN' | 'SENDING' | 'WAITING' | 'QUEUED' | 'CANCELLED';
   waiting: string | null;
   soldAt: string | null;
+  boughtAt: string | null;
   zigOut: string;
   loops: number;
   loopProfit: string;
@@ -58,6 +63,7 @@ export interface SeriesDetail {
   id: string;
   label: string;
   seriesNo: number;
+  direction: SeriesDirection;
   status: SeriesStatus;
   statusReason: string | null;
   startedAt: string;
@@ -78,7 +84,7 @@ export interface SeriesDetail {
 }
 
 export interface SeriesHistoryRow {
-  id: string; label: string; seriesNo: number; basePrice: string; qty: string; orders: number; totalZig: string;
+  id: string; label: string; seriesNo: number; direction: SeriesDirection; basePrice: string; qty: string; orders: number; totalZig: string;
   startedAt: string; stoppedAt: string | null; status: 'RUNNING' | 'STOPPED'; statusReason: string | null;
   cycles: number; profit: string;
 }
@@ -86,20 +92,24 @@ export interface SeriesHistoryRow {
 export interface SeriesOverview {
   running: boolean;
   defaults: SeriesSettings;
+  buyFirstDefaults: SeriesSettings;
   marketPrice: string | null;
   history: SeriesHistoryRow[];
   series: SeriesDetail | null;
 }
 
 export interface SeriesPreview {
+  direction: SeriesDirection;
   marketPrice: string;
   basePrice: string;
   qtyPerOrder: string;
   zigForSale: string;
-  orders: Array<{ slot: number; sellPrice: string; value: string; restsAt: string; buybackAt: string }>;
-  aboveMarket: number;
+  usdtForBuys: string;
+  /** Opening orders; nextAt is where each loop closes (buyback below a sell, sell-back above a buy). */
+  orders: Array<{ slot: number; side: 'BUY' | 'SELL'; price: string; value: string; restsAt: string; nextAt: string }>;
+  waitingForMarket: number;
   loopProfit: string;
-  resellPct: string;
+  nextPct: string;
   minOrderValue: string;
 }
 
@@ -108,7 +118,25 @@ export const previewSeries = (settings: SeriesSettings) => api.post<SeriesPrevie
 export const startSeries = (settings: SeriesSettings) => api.post<SeriesOverview>('/series/start', { settings });
 export const stopSeries = () => api.post<SeriesOverview>('/series/stop');
 
-export const KIND_LABEL: Record<OrderKind, string> = { FIRST_SELL: 'First sell', BUYBACK: 'Buyback', RESELL: 'Re-sell' };
+export const KIND_LABEL: Record<OrderKind, string> = {
+  FIRST_SELL: 'First sell', BUYBACK: 'Buyback', RESELL: 'Re-sell',
+  FIRST_BUY: 'First buy', SELLBACK: 'Sell-back', REBUY: 'Re-buy',
+};
+export const kindSide = (k: OrderKind): 'BUY' | 'SELL' => (k === 'BUYBACK' || k === 'FIRST_BUY' || k === 'REBUY' ? 'BUY' : 'SELL');
+
+/** Words that change with the direction, so every screen reads naturally for either one. */
+export function words(direction: SeriesDirection | undefined) {
+  const buy = direction === 'BUY_FIRST';
+  return {
+    buy,
+    name: buy ? 'Buy first' : 'Sell first',
+    opening: buy ? 'buys' : 'sells',
+    closing: buy ? 'sell-backs' : 'buybacks',
+    loopLine: buy
+      ? 'Buys go down from your base. Every filled buy sells back 3% higher; every filled sell-back books its profit and buys again 3% lower.'
+      : 'Sells go up from your base. Every filled sell buys back 3% lower; every filled buyback books its profit and sells again 3% higher.',
+  };
+}
 
 export const STATUS_INFO: Record<SeriesStatus, { label: string; color: string; help: string }> = {
   STARTING: { label: 'Starting', color: 'var(--warn)', help: 'Placing the first orders.' },
@@ -122,10 +150,20 @@ export const STATUS_INFO: Record<SeriesStatus, { label: string; color: string; h
 export function describeSeriesEvent(e: SeriesDetail['events'][number]): { text: string; tone: 'neutral' | 'good' | 'bad' } {
   const d = e.detail ?? {};
   switch (e.kind) {
-    case 'SERIES_STARTED': return { text: `Started at base ${d.base}: ${d.orders} sells of ${Number(d.qtyPerOrder).toLocaleString('en-US')} ZIG, ${d.firstSell} to ${d.lastSell}`, tone: 'good' };
+    case 'SERIES_STARTED': {
+      const buy = d.direction === 'BUY_FIRST';
+      return { text: `Started ${buy ? 'buying' : 'selling'} first at base ${d.base}: ${d.orders} ${buy ? 'buys' : 'sells'} of ${Number(d.qtyPerOrder).toLocaleString('en-US')} ZIG, ${d.first ?? d.firstSell} to ${d.last ?? d.lastSell}`, tone: 'good' };
+    }
     case 'SOLD': return { text: `Order #${d.slot} sold ${Number(d.qty).toLocaleString('en-US')} ZIG at ${d.at}. Buyback placed at ${d.buyAt}`, tone: 'neutral' };
+    case 'BOUGHT': return { text: `Order #${d.slot} bought ${Number(d.qty).toLocaleString('en-US')} ZIG at ${d.at}. Sell-back placed at ${d.sellAt}`, tone: 'neutral' };
     case 'CYCLE': return { text: `Order #${d.slot} loop ${d.cycle} closed: sold ${Number(d.sold).toFixed(5)}, bought ${Number(d.bought).toFixed(5)}, profit $${Number(d.profit).toFixed(4)}`, tone: 'good' };
-    case 'SERIES_STOPPED': return { text: `Stopped: ${d.reason}. All orders cancelled. ${Number(d.zigStillSold) > 0 ? `${Number(d.zigStillSold).toLocaleString('en-US')} ZIG was still sold.` : 'No ZIG left sold.'}`, tone: 'neutral' };
+    case 'SERIES_STOPPED': {
+      const sold = Number(d.zigStillSold ?? 0);
+      const bought = Number(d.zigStillBought ?? 0);
+      const left = sold > 0 ? `${sold.toLocaleString('en-US')} ZIG was still sold (kept as USDT).`
+        : bought > 0 ? `${bought.toLocaleString('en-US')} ZIG was still bought (kept as ZIG).` : 'No loop was left open.';
+      return { text: `Stopped: ${d.reason}. All orders cancelled. ${left}`, tone: 'neutral' };
+    }
     case 'PAUSED': return { text: `Paused: ${d.reason}`, tone: 'bad' };
     case 'RESUMED': return { text: `Resumed after ${d.after}`, tone: 'good' };
     case 'HALTED': return { text: `Halted: ${d.reason}`, tone: 'bad' };

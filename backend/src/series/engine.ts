@@ -130,12 +130,15 @@ export class SeriesEngine {
     return this.enqueue(async () => {
       // Check funds before taking the lease, so a refused start leaves nothing held.
       const balances = await this.d.venue.getBalances();
-      const needed = this.d.plan.zigForSale;
-      if (!resume && balances.base.lt(needed)) {
+      const buyFirst = this.d.plan.direction === 'BUY_FIRST';
+      const needed = buyFirst ? this.d.plan.usdtForBuys : this.d.plan.zigForSale;
+      const held = buyFirst ? balances.quote : balances.base;
+      const asset = buyFirst ? 'USDT' : 'ZIG';
+      if (!resume && held.lt(needed)) {
         this.status = 'STOPPED';
-        this.statusReason = `not enough ZIG: hold ${balances.base.toFixed()}, orders need ${needed.toFixed()}`;
+        this.statusReason = `not enough ${asset}: hold ${held.toFixed()}, orders need ${needed.toFixed()}`;
         await this.d.store.stopRun(this.runId, this.statusReason);
-        throw new Error(`The account holds ${balances.base.toFixed()} ZIG but the orders need ${needed.toFixed()} ZIG`);
+        throw new Error(`The account holds ${held.toFixed()} ${asset} but the orders need ${needed.toFixed()} ${asset}`);
       }
       const epoch = await this.d.lease.acquire(this.d.leaseScope, this.d.holder, this.d.leaseTtlSeconds * 1000);
       if (epoch === null) {
@@ -153,12 +156,15 @@ export class SeriesEngine {
         await this.d.store.saveSlots(this.runId, slots);
         await this.d.store.event(this.runId, 'RESUMED', { after: 'backend restart', cycles: this.cycles.length });
       } else {
-        const slots = this.d.plan.orders.map((o) => newSlot(o.slot, this.d.plan.qty, o.sellPrice));
+        const slots = this.d.plan.orders.map((o) => newSlot(o.slot, this.d.plan.qty, o.price, o.side));
         for (const s of slots) this.slots.set(s.slot, s);
         await this.d.store.saveSlots(this.runId, slots);
+        const orders = this.d.plan.orders;
         await this.d.store.event(this.runId, 'SERIES_STARTED', {
-          base: this.d.plan.basePrice.toFixed(), orders: slots.length, qtyPerOrder: this.d.plan.qty.toFixed(),
-          firstSell: slots[0]?.sellTarget.toFixed(), lastSell: slots[slots.length - 1]?.sellTarget.toFixed(),
+          direction: this.d.plan.direction, base: this.d.plan.basePrice.toFixed(), orders: slots.length, qtyPerOrder: this.d.plan.qty.toFixed(),
+          first: orders[0]?.price.toFixed(), last: orders[orders.length - 1]?.price.toFixed(),
+          // Kept for activity lines written before buy-first existed.
+          firstSell: orders[0]?.price.toFixed(), lastSell: orders[orders.length - 1]?.price.toFixed(),
         });
       }
       this.status = 'RUNNING';
@@ -179,10 +185,12 @@ export class SeriesEngine {
         await this.cancelEverything();
         this.status = 'STOPPED';
         this.statusReason = reason;
-        const open = [...this.slots.values()].filter((s) => owed(s).gt(0));
+        const open = [...this.slots.values()].filter((s) => !owed(s).isZero());
+        const sold = open.reduce((n, s) => n.plus(Decimal.max(owed(s), 0)), ZERO);
+        const bought = open.reduce((n, s) => n.plus(Decimal.max(owed(s).neg(), 0)), ZERO);
         await this.d.store.event(this.runId, 'SERIES_STOPPED', {
           reason, cycles: this.cycles.length, profit: this.profit().toFixed(),
-          zigStillSold: open.reduce((n, s) => n.plus(owed(s)), ZERO).toFixed(), openLoops: open.length,
+          zigStillSold: sold.toFixed(), zigStillBought: bought.toFixed(), openLoops: open.length,
         });
         await this.d.store.stopRun(this.runId, reason);
         if (this.epoch !== null) await this.d.lease.release(this.d.leaseScope, this.d.holder, this.epoch);
@@ -309,8 +317,12 @@ export class SeriesEngine {
         sold: result.cycle.avgSell.toFixed(), bought: result.cycle.avgBuy.toFixed(), qty: result.cycle.soldQty.toFixed(),
       });
       if (result.cycle.profit.isNegative()) return this.halt(`cycle ${result.cycle.slot}#${result.cycle.cycle} closed with negative profit ${result.cycle.profit.toFixed()}`);
-    } else if (result.outcome === 'SELL_DONE') {
-      await this.d.store.event(this.runId, 'SOLD', { slot: next.slot, cycle: next.cycle, qty: next.soldQty.toFixed(), at: fill.price.toFixed(), buyAt: next.buyTarget?.toFixed() });
+    } else if (result.outcome === 'OPEN_DONE') {
+      if (next.state === 'BUY_LIVE') {
+        await this.d.store.event(this.runId, 'SOLD', { slot: next.slot, cycle: next.cycle, qty: next.soldQty.toFixed(), at: fill.price.toFixed(), buyAt: next.buyTarget?.toFixed() });
+      } else {
+        await this.d.store.event(this.runId, 'BOUGHT', { slot: next.slot, cycle: next.cycle, qty: next.boughtNet.toFixed(), at: fill.price.toFixed(), sellAt: next.sellTarget.toFixed() });
+      }
     }
     if (drive && this.status === 'RUNNING') {
       await this.runChecks('fill');

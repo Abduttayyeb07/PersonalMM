@@ -20,20 +20,24 @@ function arg(name: string, fallback?: string): string | undefined {
 const flag = (name: string) => process.argv.includes(`--${name}`);
 
 function print(r: SeriesBacktestReport) {
+  const buy = r.direction === 'BUY_FIRST';
+  const open = buy ? 'buys' : 'sells';
+  const close = buy ? 'sell-backs' : 'buybacks';
+  const out = Number(r.zigStillSold);
   const rows: Array<[string, string | number]> = [
     ['Period', `${r.from.slice(0, 16)} -> ${r.to.slice(0, 16)} (${r.days} days, ${r.candles} candles)`],
     ['Price', `start ${r.startPrice}, end ${r.endPrice}, low ${r.lowPrice}, high ${r.highPrice}`],
-    ['Base / sells', `base ${r.basePrice}: sells ${r.firstSell} ... ${r.lastSell}, ${r.qtyPerOrder} ZIG each`],
-    ['Orders placed', `${r.ordersPlaced} (rejected ${r.ordersRejected})`],
+    [`Base / ${open}`, `base ${r.basePrice}: ${open} ${r.firstSell} ... ${r.lastSell}, ${r.qtyPerOrder} ZIG each`],
+    ['Orders placed', `${r.ordersPlaced} (rejected ${r.ordersRejected}): ${r.placedByKind.firstSells} first ${open}, ${r.placedByKind.buybacks} ${close}, ${r.placedByKind.resells} re-${open}`],
     ['Fills', `${r.sellFills} sell, ${r.buyFills} buy (${r.sellFills + r.buyFills} total)`],
-    ['Sells completed', r.sellsCompleted],
-    ['Cycles completed', `${r.cyclesCompleted} (${r.cyclesPerDay}/day)`],
+    [`${buy ? 'Buys' : 'Sells'} completed`, r.sellsCompleted],
+    ['Loops completed', `${r.cyclesCompleted} (${r.cyclesPerDay}/day)`],
     ['Realised profit', `$${r.realisedProfitUsd} (fees paid $${r.feesPaidUsd})`],
-    ['Open at end', `${r.openSellsEnd} sells, ${r.openBuysEnd} buybacks`],
-    ['ZIG still sold', `${r.zigStillSold} (max ${r.maxZigSold}); $${r.reserveEndUsd} held for buybacks`],
+    ['Open at end', `${buy ? r.openBuysEnd : r.openSellsEnd} ${open}, ${buy ? r.openSellsEnd : r.openBuysEnd} ${close}`],
+    [buy ? 'ZIG bought, open' : 'ZIG still sold', `${Math.abs(out)} (max ${r.maxZigSold})`],
     ['Account vs hold', `MtM $${r.markToMarketUsd} vs just holding $${r.holdUsd}`],
     ['Status', `${r.status}${r.statusReason ? ` (${r.statusReason})` : ''}`],
-    ['Cycles by order', Object.entries(r.cyclesBySlot).map(([k, v]) => `${k}:${v}`).join(' ') || 'none'],
+    ['Loops by order', Object.entries(r.cyclesBySlot).map(([k, v]) => `${k}:${v}`).join(' ') || 'none'],
   ];
   console.log(`\n=== ${r.label} ===`);
   for (const [k, v] of rows) console.log(`${k.padEnd(17)} ${v}`);
@@ -47,9 +51,17 @@ async function main() {
   let candles = await candlesFor('ZIGUSDT', days, join('engine-data', `ZIGUSDT-1m-${days}d.csv`), flag('refresh'));
   const lastDays = arg('last-days');
   if (lastDays) candles = candles.filter((c) => c.start >= candles[candles.length - 1].start - Number(lastDays) * 86_400_000);
-  const base: SeriesSettings = { ...defaultSeriesSettings(), totalZig: arg('zig', '15000')!, sellPct: arg('pct', '10')!, basePrice: arg('base') ?? null };
+  const buyFirst = arg('direction', 'sell') === 'buy';
+  const base: SeriesSettings = {
+    ...defaultSeriesSettings(),
+    direction: buyFirst ? 'BUY_FIRST' : 'SELL_FIRST',
+    totalZig: arg('zig', buyFirst ? '0' : '15000')!,
+    startUsdt: arg('usdt', buyFirst ? '900' : '0')!,
+    sellPct: arg('pct', '10')!,
+    basePrice: arg('base') ?? null,
+  };
   const variants: Array<{ label: string; settings: SeriesSettings }> = [
-    { label: `Series default (${base.totalZig} ZIG, ${base.sellPct}% in ${base.orders} sells, +${base.firstSellPct}% / +${base.stepPct}% / -${base.buybackPct}% / +${base.resellPct}%)`, settings: base },
+    { label: `Series ${buyFirst ? 'buy-first' : 'sell-first'} (${buyFirst ? `${base.startUsdt} USDT` : `${base.totalZig} ZIG`}, ${base.sellPct}% in ${base.orders} ${buyFirst ? 'buys' : 'sells'}, ${buyFirst ? `-${base.firstSellPct}% / -${base.stepPct}% / +${base.resellPct}% sell-back / -${base.buybackPct}% re-buy` : `+${base.firstSellPct}% / +${base.stepPct}% / -${base.buybackPct}% buyback / +${base.resellPct}% re-sell`})`, settings: base },
   ];
   if (flag('compare')) {
     variants.push({ label: 'buyback/re-sell 2%', settings: { ...base, buybackPct: '2', resellPct: '2' } });

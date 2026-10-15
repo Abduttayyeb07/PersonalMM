@@ -9,9 +9,10 @@ import { owed, reserveOf } from '../series/accounting';
 import { SeriesEngine } from '../series/engine';
 import { parseSeriesOrderId } from '../series/order-id';
 import { PgSeriesStore } from '../series/pg-store';
-import { SeriesSettingsError, buildPlan, buybackPrice, defaultSeriesSettings } from '../series/plan';
+import { roundDown } from '../engine/lattice';
+import { SeriesSettingsError, buildPlan, buybackPrice, defaultSeriesSettings, resellPrice } from '../series/plan';
 import { SeriesRunner } from '../series/runner';
-import { SeriesCycle, SeriesRun, SeriesSettings, Slot, seriesLabel } from '../series/types';
+import { SeriesCycle, SeriesRun, SeriesSettings, Slot, directionOf, orderKind, seriesLabel } from '../series/types';
 import { EngineApiService } from './engine-api.service';
 
 const SYMBOL = 'ZIGUSDT';
@@ -32,11 +33,10 @@ export function appSeriesDefaults(): SeriesSettings {
   return { ...defaultSeriesSettings(), sellPct: '100' };
 }
 
-type FillKind = 'FIRST_SELL' | 'BUYBACK' | 'RESELL';
-const kindOf = (clientOrderId: string, side: 'BUY' | 'SELL'): FillKind => {
-  if (side === 'BUY') return 'BUYBACK';
-  return (parseSeriesOrderId(clientOrderId)?.cycle ?? 1) > 1 ? 'RESELL' : 'FIRST_SELL';
-};
+/** Default buy-first settings: about the same capital as 15,000 ZIG, held as USDT. */
+export function appBuyFirstDefaults(): SeriesSettings {
+  return { ...appSeriesDefaults(), direction: 'BUY_FIRST', totalZig: '0', startUsdt: '900' };
+}
 
 /**
  * Series paper runs: the exact series engine on live Bybit prices, with simulated fills and balances.
@@ -74,12 +74,12 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     let market: string | null = null;
     try { market = (await bybitLastPrice(SYMBOL)).toFixed(); } catch { /* market price is optional here */ }
     const history = (await this.store.runSummaries(userId, 'paper', 30)).map((h) => ({
-      id: h.run.id, label: seriesLabel(h.run.seriesNo), seriesNo: h.run.seriesNo, basePrice: h.run.basePrice.toFixed(),
+      id: h.run.id, label: seriesLabel(h.run.seriesNo), seriesNo: h.run.seriesNo, direction: directionOf(h.run.settings), basePrice: h.run.basePrice.toFixed(),
       qty: h.run.qty.toFixed(), orders: h.run.settings.orders, totalZig: h.run.settings.totalZig,
       startedAt: new Date(h.run.startedAt).toISOString(), stoppedAt: h.run.stoppedAt ? new Date(h.run.stoppedAt).toISOString() : null,
       status: h.run.status, statusReason: h.run.statusReason, cycles: h.cycles, profit: h.profit.toFixed(4),
     }));
-    const base = { defaults: appSeriesDefaults(), marketPrice: market, history };
+    const base = { defaults: appSeriesDefaults(), buyFirstDefaults: appBuyFirstDefaults(), marketPrice: market, history };
     if (!latest) return { ...base, running: false, series: null };
     return { ...base, running: !!live, series: await this.describe(latest, live) };
   }
@@ -96,11 +96,13 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     const snap = live?.engine.snapshot();
     const balances = live ? await live.venue.getBalances() : null;
     const profit = cycles.reduce((n, c) => n.plus(c.profit), ZERO);
+    const direction = directionOf(run.settings);
+    const closingSide = direction === 'BUY_FIRST' ? 'SELL' : 'BUY';
     const cycleKey = new Map(cycles.map((c) => [`${c.slot}:${c.cycle}`, c]));
     const fills = recent.map((f) => {
       const id = parseSeriesOrderId(f.clientOrderId);
-      const kind = kindOf(f.clientOrderId, f.side);
-      const closed = kind === 'BUYBACK' && id ? cycleKey.get(`${id.slot}:${id.cycle}`) : undefined;
+      const kind = orderKind(direction, f.side, id?.cycle ?? 1);
+      const closed = f.side === closingSide && id ? cycleKey.get(`${id.slot}:${id.cycle}`) : undefined;
       return {
         id: f.fillId, ts: new Date(f.ts).toISOString(), slot: id?.slot ?? 0, cycle: id?.cycle ?? 0, side: f.side, kind,
         price: f.price.toFixed(), qty: f.qty.toFixed(), value: f.price.mul(f.qty).toFixed(4),
@@ -114,13 +116,14 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       const done = cycles.filter((c) => c.slot === s.slot);
       return {
         slot: s.slot, cycle: s.cycle, side,
-        kind: (side === 'BUY' ? 'BUYBACK' : s.cycle > 1 ? 'RESELL' : 'FIRST_SELL') as FillKind,
+        kind: orderKind(direction, side, s.cycle),
         target: target?.toFixed() ?? null,
         price: s.order?.price.toFixed() ?? null,
         qty: s.legQty.toFixed(), filled: s.legFilled.toFixed(),
         status: s.order ? (s.order.status === 'LIVE' ? 'OPEN' : 'SENDING') : (s.waiting ? 'WAITING' : (live ? 'QUEUED' : 'CANCELLED')),
         waiting: s.waiting ?? null,
         soldAt: s.soldQty.gt(0) ? s.soldQuote.plus(s.feeSellQuote).div(s.soldQty).toFixed(6) : null,
+        boughtAt: s.boughtGross.gt(0) ? s.buyCost.minus(s.feeBuyQuote).div(s.boughtGross).toFixed(6) : null,
         zigOut: owed(s).toFixed(), loops: done.length, loopProfit: done.reduce((n, c) => n.plus(c.profit), ZERO).toFixed(4),
       };
     });
@@ -131,13 +134,18 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     const hours = Math.max((ended - started) / 3_600_000, 1 / 60);
     const s = run.settings;
     return {
-      id: run.id, label: seriesLabel(run.seriesNo), seriesNo: run.seriesNo,
+      id: run.id, label: seriesLabel(run.seriesNo), seriesNo: run.seriesNo, direction,
       status: live ? snap!.status : 'STOPPED', statusReason: live ? snap!.statusReason ?? null : run.statusReason,
       startedAt: new Date(started).toISOString(), stoppedAt: run.stoppedAt ? new Date(run.stoppedAt).toISOString() : null,
       settings: s,
       plan: {
         basePrice: run.basePrice.toFixed(), qty: run.qty.toFixed(), orders: s.orders,
-        firstSell: slots.find((x) => x.slot === 1)?.cycle === 1 ? slots.find((x) => x.slot === 1)!.sellTarget.toFixed() : null,
+        firstSell: (() => {
+          // The first opening order's price while slot 1 is still on its first loop.
+          const one = slots.find((x) => x.slot === 1);
+          if (!one || one.cycle !== 1) return null;
+          return direction === 'BUY_FIRST' ? one.buyTarget?.toFixed() ?? null : one.sellTarget.toFixed();
+        })(),
       },
       book: snap?.book ?? null,
       totals: {
@@ -181,25 +189,35 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   async preview(settings: SeriesSettings) {
     const { specs, price } = await this.market();
     const plan = this.plan(settings, price, specs);
-    const resell = new Decimal(settings.resellPct).div(100);
+    const buyFirst = plan.direction === 'BUY_FIRST';
+    const one = new Decimal(1);
     const fee = specs.makerFee;
-    const first = plan.orders[0].sellPrice;
-    // One loop on the first order: sell at its price, buy back -buyback%, fees on both legs.
-    const buyAt = buybackPrice(first, new Decimal(settings.buybackPct), specs.tick);
-    const loopProfit = plan.qty.mul(first).mul(new Decimal(1).minus(fee)).minus(plan.qty.div(new Decimal(1).minus(fee)).mul(buyAt));
+    const buybackPct = new Decimal(settings.buybackPct);
+    const resellPct = new Decimal(settings.resellPct);
+    // Where each order's loop closes: a buyback below a sell, or a sell-back above a buy.
+    const closeAt = (p: Decimal) => (buyFirst ? resellPrice(p, resellPct, specs.tick) : buybackPrice(p, buybackPct, specs.tick));
+    // One loop on the first order, fees on both legs (Bybit takes the buy fee in ZIG).
+    const first = plan.orders[0].price;
+    const loopProfit = buyFirst
+      ? roundDown(plan.qty.mul(one.minus(fee)), specs.lot).mul(closeAt(first)).mul(one.minus(fee)).minus(plan.qty.mul(first))
+      : plan.qty.mul(first).mul(one.minus(fee)).minus(plan.qty.div(one.minus(fee)).mul(closeAt(first)));
     return {
+      direction: plan.direction,
       marketPrice: price.toFixed(),
       basePrice: plan.basePrice.toFixed(),
       qtyPerOrder: plan.qty.toFixed(),
       zigForSale: plan.zigForSale.toFixed(),
+      usdtForBuys: plan.usdtForBuys.toFixed(2),
       orders: plan.orders.map((o) => ({
-        slot: o.slot, sellPrice: o.sellPrice.toFixed(), value: o.sellPrice.mul(plan.qty).toFixed(2),
-        restsAt: Decimal.max(o.sellPrice, price).toFixed(),
-        buybackAt: buybackPrice(o.sellPrice, new Decimal(settings.buybackPct), specs.tick).toFixed(),
+        slot: o.slot, side: o.side, price: o.price.toFixed(), value: o.price.mul(plan.qty).toFixed(2),
+        // A sell never rests below its price, a buy never above it; past the market they rest at the market.
+        restsAt: (buyFirst ? Decimal.min(o.price, price) : Decimal.max(o.price, price)).toFixed(),
+        nextAt: closeAt(o.price).toFixed(),
       })),
-      aboveMarket: plan.orders.filter((o) => o.sellPrice.gt(price)).length,
+      // Orders the market still has to reach: sells above it, or buys below it.
+      waitingForMarket: plan.orders.filter((o) => (buyFirst ? o.price.lt(price) : o.price.gt(price))).length,
       loopProfit: loopProfit.toFixed(4),
-      resellPct: resell.mul(100).toFixed(),
+      nextPct: (buyFirst ? buybackPct : resellPct).toFixed(),
       minOrderValue: specs.minOrderValue.toFixed(),
     };
   }

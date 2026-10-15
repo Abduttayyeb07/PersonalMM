@@ -12,10 +12,10 @@ describe('series plan', () => {
     expect(plan.orders).toHaveLength(15);
     expect(plan.qty.toFixed()).toBe('100');
     expect(plan.zigForSale.toFixed()).toBe('1500');
-    const prices = plan.orders.map((o) => o.sellPrice.toFixed());
+    const prices = plan.orders.map((o) => o.price.toFixed());
     expect(prices.slice(0, 6)).toEqual(['0.06077', '0.06138', '0.06199', '0.06261', '0.06324', '0.06387']);
     expect(prices[14]).toBe('0.06985');
-    expect(plan.orders[0].sellPrice.gte(D('0.059').mul('1.03'))).toBe(true); // first sell is base +3% or above
+    expect(plan.orders[0].price.gte(D('0.059').mul('1.03'))).toBe(true); // first sell is base +3% or above
   });
 
   it('anchors at the market price when no base is given', () => {
@@ -277,5 +277,92 @@ describe('series resume after a restart', () => {
     await engine.idle();
     expect(engine.getCycles().length).toBeGreaterThan(cycles.length);
     expect(engine.getStatus()).toBe('RUNNING');
+  });
+});
+
+describe('buy-first series (the mirror)', () => {
+  const buyFirst = { direction: 'BUY_FIRST' as const, totalZig: '0', startUsdt: '900', basePrice: '0.059' };
+  const sellBackQty = (q: Decimal) => q.mul('0.999').toDecimalPlaces(2, Decimal.ROUND_DOWN);
+
+  it('builds 15 buys going DOWN from base 0.059: first at -3%, then 1% apart, equal ZIG, funded by USDT', () => {
+    const plan = buildPlan({ ...defaultSeriesSettings(), ...buyFirst, sellPct: '100' }, D('0.060'), BYBIT_ZIG_SPECS);
+    expect(plan.direction).toBe('BUY_FIRST');
+    expect(plan.orders.every((o) => o.side === 'BUY')).toBe(true);
+    expect(plan.orders.slice(0, 6).map((o) => o.price.toFixed())).toEqual(['0.05723', '0.05666', '0.05609', '0.05553', '0.05497', '0.05442']);
+    expect(plan.orders[0].price.lte(D('0.059').mul('0.97'))).toBe(true); // never closer than -3%
+    const sum = plan.orders.reduce((n, o) => n.plus(o.price), D(0));
+    expect(plan.qty.toFixed()).toBe(D(900).div(sum).toDecimalPlaces(2, Decimal.ROUND_DOWN).toFixed());
+    expect(plan.usdtForBuys.lte(900)).toBe(true);
+    expect(plan.zigForSale.toFixed()).toBe('0');
+  });
+
+  it('refuses too little USDT and says how much is needed', () => {
+    expect(() => buildPlan({ ...defaultSeriesSettings(), ...buyFirst, startUsdt: '30' }, D('0.06'), BYBIT_ZIG_SPECS)).toThrow(/USDT/);
+  });
+
+  it('6 buys fill -> 6 sell-backs 3% above; 3 sell-backs fill -> 3 re-buys 3% below; always 15 orders; profit in USDT', async () => {
+    const r = await seriesRig({ settings: { ...buyFirst, sellPct: '100' }, startPrice: '0.0600' });
+    await r.engine.start();
+    await r.sim.drain();
+    let open = await r.sim.getOpenOrders();
+    expect(open).toHaveLength(15);
+    expect(open.every((o) => o.side === 'BUY')).toBe(true);
+
+    await r.step('0.0544'); // buys #1..#6 fill (0.05723 ... 0.05442)
+    open = await r.sim.getOpenOrders();
+    const sells = open.filter((o) => o.side === 'SELL').sort((a, b) => a.price.comparedTo(b.price));
+    expect(open.filter((o) => o.side === 'BUY')).toHaveLength(9);
+    expect(sells.map((o) => o.price.toFixed())).toEqual(['0.05606', '0.05662', '0.0572', '0.05778', '0.05836', '0.05895']);
+    expect(open).toHaveLength(15);
+    // Each sell-back sells exactly the ZIG received (Bybit keeps 0.1% of a buy in ZIG).
+    const qty = r.engine.getSlots()[0].qty;
+    expect(sells[0].qty.toFixed()).toBe(sellBackQty(qty).toFixed());
+
+    await r.step('0.0575'); // sell-backs of #6, #5, #4 fill (0.05606, 0.05662, 0.0572)
+    open = await r.sim.getOpenOrders();
+    const rebuys = open.filter((o) => o.side === 'BUY' && /-C0002-/.test(o.clientOrderId)).map((o) => o.price.toFixed()).sort();
+    expect(rebuys).toEqual(['0.05437', '0.05492', '0.05548']);
+    expect(open).toHaveLength(15);
+    const cycles = r.engine.getCycles();
+    expect(cycles).toHaveLength(3);
+    expect(cycles.every((c) => c.profit.gt(0))).toBe(true);
+    expect(r.engine.getStatus()).toBe('RUNNING');
+    await r.engine.checkNow();
+    expect(r.engine.snapshot().breaches).toEqual([]);
+    // ZIG neutral: what was bought and sold back leaves the ZIG balance where it was, plus open buys.
+    const bal = await r.sim.getBalances();
+    const zigHeld = r.engine.getSlots().reduce((n, s) => n.plus(s.boughtNet.minus(s.soldQty)), D(0));
+    expect(bal.base.toFixed()).toBe(zigHeld.plus(cycles.reduce((n, c) => n.plus(c.boughtNet).minus(c.soldQty), D(0))).toFixed());
+  });
+
+  it('keeps looping on a swinging market, and stop cancels every order', async () => {
+    const r = await seriesRig({ settings: { ...buyFirst, sellPct: '100' }, startPrice: '0.0600' });
+    await r.engine.start();
+    await r.sim.drain();
+    for (let i = 0; i < 5; i++) { await r.step('0.0530'); await r.step('0.0600'); }
+    const slot1 = r.engine.getSlots().find((s) => s.slot === 1)!;
+    expect(slot1.cycle).toBeGreaterThan(3);
+    expect(r.engine.getCycles().length).toBeGreaterThan(20);
+    expect(r.engine.getCycles().every((c) => c.profit.gt(0))).toBe(true);
+    await r.engine.checkNow();
+    expect(r.engine.snapshot().breaches).toEqual([]);
+    expect(await r.sim.getOpenOrders()).toHaveLength(15);
+    await r.engine.stop();
+    await r.sim.drain();
+    expect(await r.sim.getOpenOrders()).toHaveLength(0);
+    expect(r.engine.getStatus()).toBe('STOPPED');
+  });
+
+  it('a buy never rests above its price: with the market already below, it rests at the best bid', async () => {
+    const r = await seriesRig({ settings: { ...buyFirst, sellPct: '100' }, startPrice: '0.0560' });
+    await r.engine.start();
+    await r.sim.drain();
+    const open = await r.sim.getOpenOrders();
+    expect(open).toHaveLength(15);
+    const plan = buildPlan({ ...defaultSeriesSettings(), ...buyFirst, sellPct: '100' }, D('0.056'), BYBIT_ZIG_SPECS);
+    for (const o of open) {
+      const target = plan.orders.find((p) => o.clientOrderId.includes(`-N${String(p.slot).padStart(2, '0')}-`))!.price;
+      expect(o.price.lte(target)).toBe(true);
+    }
   });
 });

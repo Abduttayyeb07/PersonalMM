@@ -2,13 +2,13 @@
 
 import { useState } from 'react';
 import { dateTime, price, qty, usd } from '../../lib/engine';
-import { KIND_LABEL, OrderKind, SeriesDetail, SeriesFill, SeriesHistoryRow, SeriesOrder, describeSeriesEvent } from '../../lib/series';
+import { KIND_LABEL, OrderKind, SeriesDetail, SeriesFill, SeriesHistoryRow, SeriesOrder, describeSeriesEvent, kindSide, words } from '../../lib/series';
 import { Empty } from '../console/ui';
 
 const SIDE_COLOR = { SELL: 'var(--sell)', BUY: 'var(--buy)' } as const;
 
 export function KindPill({ kind }: { kind: OrderKind }) {
-  const sell = kind !== 'BUYBACK';
+  const sell = kindSide(kind) === 'SELL';
   return (
     <span className="s-pill" style={{ color: sell ? 'var(--sell)' : 'var(--buy)', background: sell ? 'rgba(207,125,31,.14)' : 'rgba(76,141,245,.14)' }}>
       {KIND_LABEL[kind]}
@@ -21,15 +21,16 @@ const ORDER_STATUS: Record<SeriesOrder['status'], string> = {
 };
 
 /** All order slots: what each is doing now, and what it has earned. */
-export function OrdersTable({ orders, mid }: { orders: SeriesOrder[]; mid: number | null }) {
+export function OrdersTable({ orders, mid, direction }: { orders: SeriesOrder[]; mid: number | null; direction: 'SELL_FIRST' | 'BUY_FIRST' }) {
   if (!orders.length) return <Empty title="No orders yet" />;
+  const buy = words(direction).buy;
   return (
     <div className="c-table-wrap" style={{ maxHeight: 640 }}>
       <table className="c-table">
         <thead>
           <tr>
             <th>Order</th><th>Now</th><th>Status</th><th className="r">Price</th><th className="r">From market</th>
-            <th className="r">ZIG</th><th className="r">Sold at</th><th className="r">Loops</th><th className="r">Profit</th>
+            <th className="r">ZIG</th><th className="r">{buy ? 'Bought at' : 'Sold at'}</th><th className="r">Loops</th><th className="r">Profit</th>
           </tr>
         </thead>
         <tbody>
@@ -46,7 +47,7 @@ export function OrdersTable({ orders, mid }: { orders: SeriesOrder[]; mid: numbe
                 <td className="r num strong">{p ? price(p) : '—'}</td>
                 <td className="r num">{dist === null ? '—' : `${dist > 0 ? '+' : ''}${dist.toFixed(2)}%`}</td>
                 <td className="r num">{qty(o.qty)}{Number(o.filled) > 0 && <span style={{ color: 'var(--muted)' }}> ({qty(o.filled)} done)</span>}</td>
-                <td className="r num">{o.soldAt ? price(o.soldAt) : '—'}</td>
+                <td className="r num">{(buy ? o.boughtAt : o.soldAt) ? price((buy ? o.boughtAt : o.soldAt)!) : '—'}</td>
                 <td className="r num">{o.loops}</td>
                 <td className="r num" style={{ color: Number(o.loopProfit) > 0 ? 'var(--profit-text)' : undefined }}>{usd(o.loopProfit)}</td>
               </tr>
@@ -58,19 +59,22 @@ export function OrdersTable({ orders, mid }: { orders: SeriesOrder[]; mid: numbe
   );
 }
 
-const FILTERS: Array<{ id: 'ALL' | OrderKind; label: string }> = [
-  { id: 'ALL', label: 'All' }, { id: 'FIRST_SELL', label: 'First sells' }, { id: 'BUYBACK', label: 'Buybacks' }, { id: 'RESELL', label: 'Re-sells' },
-];
+const FILTERS: Record<'SELL_FIRST' | 'BUY_FIRST', Array<{ id: 'ALL' | OrderKind; label: string }>> = {
+  SELL_FIRST: [{ id: 'ALL', label: 'All' }, { id: 'FIRST_SELL', label: 'First sells' }, { id: 'BUYBACK', label: 'Buybacks' }, { id: 'RESELL', label: 'Re-sells' }],
+  BUY_FIRST: [{ id: 'ALL', label: 'All' }, { id: 'FIRST_BUY', label: 'First buys' }, { id: 'SELLBACK', label: 'Sell-backs' }, { id: 'REBUY', label: 'Re-buys' }],
+};
 
 /** Every fill, newest first, filterable by what the order was for. */
-export function FillsTable({ fills, maxHeight = 640, filterable = true }: { fills: SeriesFill[]; maxHeight?: number; filterable?: boolean }) {
+export function FillsTable({ fills, maxHeight = 640, filterable = true, direction = 'SELL_FIRST' }: {
+  fills: SeriesFill[]; maxHeight?: number; filterable?: boolean; direction?: 'SELL_FIRST' | 'BUY_FIRST';
+}) {
   const [filter, setFilter] = useState<'ALL' | OrderKind>('ALL');
   const rows = filter === 'ALL' ? fills : fills.filter((f) => f.kind === filter);
   return (
     <div>
       {filterable && (
         <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="Show fills of type">
-          {FILTERS.map((f) => (
+          {FILTERS[direction].map((f) => (
             <button key={f.id} type="button" className="s-chip" aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>
               {f.label} <span className="num">{f.id === 'ALL' ? fills.length : fills.filter((x) => x.kind === f.id).length}</span>
             </button>
@@ -106,12 +110,12 @@ export function FillsTable({ fills, maxHeight = 640, filterable = true }: { fill
 }
 
 export function LoopsTable({ loops }: { loops: SeriesDetail['loops'] }) {
-  if (!loops.length) return <Empty title="No loop completed yet">A loop completes when a sell fills and its buyback 3% lower fills too.</Empty>;
+  if (!loops.length) return <Empty title="No loop completed yet">A loop completes when both of its orders fill: a sell and its buyback, or a buy and its sell-back.</Empty>;
   return (
     <div className="c-table-wrap" style={{ maxHeight: 640 }}>
       <table className="c-table">
         <thead>
-          <tr><th>Closed</th><th>Order</th><th className="r">ZIG</th><th className="r">Sold at</th><th className="r">Bought back at</th><th className="r">Gap</th><th className="r">Profit</th></tr>
+          <tr><th>Closed</th><th>Order</th><th className="r">ZIG</th><th className="r">Sold at</th><th className="r">Bought at</th><th className="r">Gap</th><th className="r">Profit</th></tr>
         </thead>
         <tbody>
           {loops.map((l) => (
@@ -137,12 +141,13 @@ export function HistoryTable({ rows }: { rows: SeriesHistoryRow[] }) {
     <div className="c-table-wrap">
       <table className="c-table">
         <thead>
-          <tr><th>Series</th><th>Status</th><th className="r">Base</th><th className="r">Orders</th><th>Started</th><th>Ended</th><th className="r">Loops</th><th className="r">Profit</th></tr>
+          <tr><th>Series</th><th>Direction</th><th>Status</th><th className="r">Base</th><th className="r">Orders</th><th>Started</th><th>Ended</th><th className="r">Loops</th><th className="r">Profit</th></tr>
         </thead>
         <tbody>
           {rows.map((r) => (
             <tr key={r.id}>
               <td className="strong" style={{ fontWeight: 600 }}>Series {r.label}</td>
+              <td style={{ color: r.direction === 'BUY_FIRST' ? 'var(--buy)' : 'var(--sell)' }}>{words(r.direction).name}</td>
               <td>
                 <span className="c-pill"><i style={{ background: r.status === 'RUNNING' ? 'var(--good)' : 'var(--faint)' }} />{r.status === 'RUNNING' ? 'Running' : 'Stopped'}</span>
                 {r.statusReason && r.status !== 'RUNNING' && <div className="mt-1 text-[12px]" style={{ color: 'var(--muted)', whiteSpace: 'normal', maxWidth: 280 }}>{r.statusReason}</div>}

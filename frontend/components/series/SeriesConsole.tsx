@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuthStore } from '../../store/auth';
 import { errorMessage, price } from '../../lib/engine';
-import { STATUS_INFO, SeriesOverview, getSeries } from '../../lib/series';
+import { STATUS_INFO, SeriesOverview, getSeries, words } from '../../lib/series';
 import ConnectExchange from '../ConnectExchange';
 import { Card, Empty } from '../console/ui';
 import { ControlBar, DashboardPage, midOf } from './Dashboard';
@@ -23,12 +23,12 @@ const TABS: Array<{ id: Tab; label: string }> = [
 ];
 
 const HEADINGS: Record<Tab, { title: string; lede: string }> = {
-  dashboard: { title: 'Series dashboard', lede: 'Sells go up from your base. Every filled sell buys back 3% lower; every filled buyback books its profit and sells again 3% higher.' },
+  dashboard: { title: 'Series dashboard', lede: '' },
   orders: { title: 'Orders', lede: 'Each order slot: what it is waiting as now, where it sits against the market, and what it has earned.' },
-  fills: { title: 'Fills', lede: 'Every first sell, buyback and re-sell that filled, newest first.' },
-  loops: { title: 'Loops', lede: 'Each completed sell and buyback, and the profit it booked.' },
+  fills: { title: 'Fills', lede: 'Every order that filled, newest first.' },
+  loops: { title: 'Loops', lede: 'Each completed loop (a sell and a buy) and the profit it booked.' },
   history: { title: 'Series history', lede: 'Every series you have run. A new base starts the next one.' },
-  new: { title: 'New series', lede: 'Set the base price and the order ladder. Starting replaces the running series and cancels its orders.' },
+  new: { title: 'New series', lede: 'Sell first or buy first, the base price and the order ladder. Starting replaces the running series and cancels its orders.' },
   keys: { title: 'Exchange keys', lede: 'Connect a trade-only key. It is encrypted for your account only and can never be read back.' },
 };
 
@@ -82,7 +82,7 @@ export default function SeriesConsole() {
   };
   const s = o?.series ?? null;
   const mid = o ? midOf(s, o.marketPrice) : null;
-  const heading = HEADINGS[tab];
+  const heading = tab === 'dashboard' ? { ...HEADINGS.dashboard, lede: words(s?.direction).loopLine } : HEADINGS[tab];
   const status = o && s ? STATUS_INFO[o.running ? s.status : 'STOPPED'] : null;
   const showControl = tab !== 'keys' && tab !== 'new';
 
@@ -91,10 +91,10 @@ export default function SeriesConsole() {
       <header className="c-header">
         <div className="c-brand">
           <span className="c-brand-mark" aria-hidden>Z</span>
-          <span className="c-brand-name">ZIG Series<span className="c-brand-sub">Sell-first loops</span></span>
+          <span className="c-brand-name">ZIG Series<span className="c-brand-sub">Sell-first and buy-first loops</span></span>
         </div>
         <div className="c-header-context">
-          {s ? <>Series <b>{s.label}</b> <span style={{ margin: '0 12px', color: 'var(--faint)' }}>/</span> base <b className="num">{price(s.plan.basePrice)}</b></> : 'No series yet'}
+          {s ? <>Series <b>{s.label}</b> <span style={{ margin: '0 12px', color: 'var(--faint)' }}>/</span> <b>{words(s.direction).name}</b> <span style={{ margin: '0 12px', color: 'var(--faint)' }}>/</span> base <b className="num">{price(s.plan.basePrice)}</b></> : 'No series yet'}
         </div>
         <div className="c-header-right">
           {mid !== null && (
@@ -137,10 +137,10 @@ export default function SeriesConsole() {
 
         {o && tab === 'dashboard' && <DashboardPage o={o} />}
         {o && tab === 'orders' && (s
-          ? <Card title={`Series ${s.label} orders`} sub={`${s.totals.openSells} sells and ${s.totals.openBuys} buybacks open.`} pad><OrdersTable orders={s.orders} mid={mid} /></Card>
+          ? <Card title={`Series ${s.label} orders`} sub={`${s.totals.openSells} sells and ${s.totals.openBuys} buys open.`} pad><OrdersTable orders={s.orders} mid={mid} direction={s.direction} /></Card>
           : <div className="c-card c-card-pad"><Empty title="No series yet" /></div>)}
         {o && tab === 'fills' && (s
-          ? <Card title={`Series ${s.label} fills`} sub={`${s.totals.sellFills} sells and ${s.totals.buyFills} buybacks filled. The latest 300 are listed.`}><FillsTable fills={s.fills} /></Card>
+          ? <Card title={`Series ${s.label} fills`} sub={`${s.totals.sellFills} sells and ${s.totals.buyFills} buys filled. The latest 300 are listed.`}><FillsTable fills={s.fills} direction={s.direction} /></Card>
           : <div className="c-card c-card-pad"><Empty title="No series yet" /></div>)}
         {o && tab === 'loops' && (s
           ? (

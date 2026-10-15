@@ -207,6 +207,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .s-ladder-who, .s-ladder-qty { display: none; }
 }
 
+/* Direction choice: two big options, amber for sell first, blue for buy first. */
+.s-direction { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.s-direction-option {
+  display: grid; gap: 4px; text-align: left; padding: 14px 16px; border-radius: 10px;
+  background: var(--sunken); border: 1px solid var(--line); color: var(--muted); font-size: 13px; line-height: 1.45;
+}
+.s-direction-option b { color: var(--ink); font-size: 15px; font-weight: 600; }
+.s-direction-option:hover { border-color: #3c526d; }
+.s-direction-option[aria-checked='true'][data-side='SELL'] { border-color: var(--sell); background: rgba(207, 125, 31, 0.1); }
+.s-direction-option[aria-checked='true'][data-side='BUY'] { border-color: var(--buy); background: rgba(76, 141, 245, 0.1); }
+@media (max-width: 560px) { .s-direction { grid-template-columns: 1fr; } }
+
 @media (max-width: 1180px) {
   .c-header-context { display: none; }
   .c-header-right { margin-left: auto; }

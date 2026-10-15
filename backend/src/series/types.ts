@@ -1,29 +1,41 @@
 import Decimal from 'decimal.js';
 import { LiveOrder } from '../engine/rung-accounting';
 
+/**
+ * SELL_FIRST: sells sit above the base; each filled sell buys back lower, each buyback re-sells higher.
+ * BUY_FIRST (the mirror): buys sit below the base; each filled buy sells back higher, each sell-back
+ * re-buys lower. Profit is booked in USDT either way.
+ */
+export type SeriesDirection = 'SELL_FIRST' | 'BUY_FIRST';
+
 /** What a user chooses when starting a series. Numbers travel as strings to stay exact. */
 export interface SeriesSettings {
-  /** All the base asset (ZIG) the simulated or real account holds. */
+  /** Which side opens each loop. Missing on series stored before buy-first existed: SELL_FIRST. */
+  direction?: SeriesDirection;
+  /** All the base asset (ZIG) the simulated or real account holds. Funds the sells when selling first. */
   totalZig: string;
+  /** USDT the account holds. Funds the buys when buying first. */
   startUsdt: string;
   /** Reference price. null = the current market price when the series starts. Nothing trades at it. */
   basePrice: string | null;
-  /** Percent of totalZig put up for sale across all orders (e.g. 10). */
+  /** Percent of the funding asset put into the opening orders (ZIG when selling first, USDT when buying first). */
   sellPct: string;
-  /** Number of sell orders placed at the start (e.g. 15). */
+  /** Number of opening orders placed at the start (e.g. 15). */
   orders: number;
-  /** First sell sits this far above the base (e.g. 3). */
+  /** First opening order sits this far from the base: above it when selling first, below when buying first. */
   firstSellPct: string;
-  /** Each following sell sits this far above the previous one (e.g. 1). */
+  /** Each following opening order sits this far beyond the previous one (e.g. 1). */
   stepPct: string;
-  /** After a sell fills, the buyback goes this far below it (e.g. 3). */
+  /** Distance below a filled sell for the next buy: the buyback (sell first) or the re-buy (buy first). */
   buybackPct: string;
-  /** After a buyback fills, the re-sell goes this far above it (e.g. 3). */
+  /** Distance above a filled buy for the next sell: the re-sell (sell first) or the sell-back (buy first). */
   resellPct: string;
   /** Optional automatic stop. */
   maxCycles: number | null;
   maxHours: number | null;
 }
+
+export const directionOf = (s: Pick<SeriesSettings, 'direction'>): SeriesDirection => s.direction ?? 'SELL_FIRST';
 
 export type SlotState = 'SELL_LIVE' | 'BUY_LIVE';
 
@@ -89,14 +101,28 @@ export interface SeriesRun {
 
 export interface PlannedOrder {
   slot: number;
-  sellPrice: Decimal;
+  /** The opening side: SELL when selling first, BUY when buying first. */
+  side: 'BUY' | 'SELL';
+  price: Decimal;
 }
 
 export interface SeriesPlan {
+  direction: SeriesDirection;
   basePrice: Decimal;
   qty: Decimal;
+  /** ZIG the opening sells need (selling first; 0 when buying first). */
   zigForSale: Decimal;
+  /** USDT the opening buys need (buying first; 0 when selling first). */
+  usdtForBuys: Decimal;
   orders: PlannedOrder[];
+}
+
+/** What an order is for, in the user's words. */
+export type OrderKind = 'FIRST_SELL' | 'BUYBACK' | 'RESELL' | 'FIRST_BUY' | 'SELLBACK' | 'REBUY';
+
+export function orderKind(direction: SeriesDirection, side: 'BUY' | 'SELL', cycle: number): OrderKind {
+  if (direction === 'BUY_FIRST') return side === 'SELL' ? 'SELLBACK' : cycle > 1 ? 'REBUY' : 'FIRST_BUY';
+  return side === 'BUY' ? 'BUYBACK' : cycle > 1 ? 'RESELL' : 'FIRST_SELL';
 }
 
 /** "Series A", "Series B" ... "Series Z", "Series AA". */

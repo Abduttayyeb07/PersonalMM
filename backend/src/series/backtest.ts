@@ -9,7 +9,7 @@ import { parseSeriesOrderId } from './order-id';
 import { SeriesEngine } from './engine';
 import { MemorySeriesStore } from './memory-store';
 import { buildPlan } from './plan';
-import { SeriesSettings } from './types';
+import { OrderKind, SeriesDirection, SeriesSettings, directionOf, orderKind } from './types';
 
 export interface SeriesBacktestReport {
   label: string;
@@ -50,13 +50,18 @@ export interface SeriesBacktestReport {
   statusReason?: string;
   cyclesBySlot: Record<string, number>;
   /** Orders accepted by the venue, by what they were for. */
+  direction: SeriesDirection;
+  /**
+   * Orders by role. Selling first: first sells / buybacks / re-sells. Buying first, the same three
+   * buckets hold first buys / sell-backs / re-buys.
+   */
   placedByKind: { firstSells: number; buybacks: number; resells: number };
   /** Fills by what the order was for. */
   filledByKind: { firstSells: number; buybacks: number; resells: number };
   /** One row per order slot: its starting sell and what it went on to do. */
   slots: Array<{ slot: number; firstSell: string; cycles: number; profit: string; state: string; cycle: number; livePrice: string | null; owedZig: string }>;
   /** Every fill, oldest first. kind: first sell, buyback, or re-sell. */
-  trades: Array<{ t: number; slot: number; cycle: number; side: 'BUY' | 'SELL'; kind: 'FIRST_SELL' | 'BUYBACK' | 'RESELL'; price: string; qty: string; profit: string | null }>;
+  trades: Array<{ t: number; slot: number; cycle: number; side: 'BUY' | 'SELL'; kind: OrderKind; price: string; qty: string; profit: string | null }>;
   /** Closing price every 15 minutes, for the chart. */
   priceSeries: Array<[number, number]>;
   profitByDay: Array<{ day: string; cycles: number; profit: string }>;
@@ -112,7 +117,7 @@ export async function runSeriesBacktest(opts: {
       await sim.drain();
       await engine.idle();
     }
-    const o = engine.getSlots().reduce((s, x) => s.plus(owed(x)), new Decimal(0));
+    const o = engine.getSlots().reduce((s, x) => s.plus(owed(x)), new Decimal(0)).abs();
     if (o.gt(maxOwed)) maxOwed = o;
     if ((c.start / 60_000) % 60 === 0) { await engine.checkNow(); await sim.drain(); }
   }
@@ -138,15 +143,15 @@ export async function runSeriesBacktest(opts: {
     bySlot[`#${cy.slot}`] = (bySlot[`#${cy.slot}`] ?? 0) + 1;
   }
   for (const f of fills) fees = fees.plus(f.feeAsset === 'quote' ? f.feeAmount : f.feeAmount.mul(f.price));
-  const kindOf = (id: string, side: 'BUY' | 'SELL') => {
-    const p = parseSeriesOrderId(id);
-    return side === 'BUY' ? 'BUYBACK' as const : p && p.cycle > 1 ? 'RESELL' as const : 'FIRST_SELL' as const;
-  };
+  const direction = directionOf(settings);
+  const kindOf = (id: string, side: 'BUY' | 'SELL') => orderKind(direction, side, parseSeriesOrderId(id)?.cycle ?? 1);
   const count = (rows: Array<{ id: string; side: 'BUY' | 'SELL' }>) => {
     const out = { firstSells: 0, buybacks: 0, resells: 0 };
     for (const r of rows) {
       const k = kindOf(r.id, r.side);
-      if (k === 'BUYBACK') out.buybacks++; else if (k === 'RESELL') out.resells++; else out.firstSells++;
+      if (k === 'BUYBACK' || k === 'SELLBACK') out.buybacks++;
+      else if (k === 'RESELL' || k === 'REBUY') out.resells++;
+      else out.firstSells++;
     }
     return out;
   };
@@ -165,7 +170,7 @@ export async function runSeriesBacktest(opts: {
     const mine = cycles.filter((c) => c.slot === s.slot);
     return {
       slot: s.slot,
-      firstSell: plan.orders[s.slot - 1].sellPrice.toFixed(),
+      firstSell: plan.orders[s.slot - 1].price.toFixed(),
       cycles: mine.length,
       profit: mine.reduce((n, c) => n.plus(c.profit), new Decimal(0)).toFixed(4),
       state: s.state,
@@ -175,7 +180,9 @@ export async function runSeriesBacktest(opts: {
     };
   });
   const days = (last.start - candles[0].start) / 86_400_000 || 1;
-  const sellsCompleted = cycles.length + engine.getSlots().filter((s) => s.state === 'BUY_LIVE').length;
+  // Opening orders filled completely: every closed loop, plus every slot now waiting on its closing order.
+  const closingState = direction === 'BUY_FIRST' ? 'SELL_LIVE' : 'BUY_LIVE';
+  const sellsCompleted = cycles.length + engine.getSlots().filter((s) => s.state === closingState).length;
   return {
     label: opts.label,
     from: new Date(candles[0].start).toISOString(),
@@ -187,8 +194,8 @@ export async function runSeriesBacktest(opts: {
     lowPrice: low.toFixed(),
     highPrice: high.toFixed(),
     basePrice: plan.basePrice.toFixed(),
-    firstSell: plan.orders[0].sellPrice.toFixed(),
-    lastSell: plan.orders[plan.orders.length - 1].sellPrice.toFixed(),
+    firstSell: plan.orders[0].price.toFixed(),
+    lastSell: plan.orders[plan.orders.length - 1].price.toFixed(),
     qtyPerOrder: plan.qty.toFixed(),
     ordersPlaced: places.filter((p) => p.kind === 'place' && p.ok).length,
     ordersRejected: places.filter((p) => p.kind === 'place' && !p.ok).length,
@@ -209,6 +216,7 @@ export async function runSeriesBacktest(opts: {
     status: engine.getStatus(),
     statusReason: snap.statusReason,
     cyclesBySlot: bySlot,
+    direction,
     placedByKind: count(okPlaces),
     filledByKind: count(fillRows.map((f) => ({ id: f.id, side: f.side }))),
     slots: slotRows,
