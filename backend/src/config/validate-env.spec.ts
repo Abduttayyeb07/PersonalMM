@@ -15,8 +15,7 @@ describe('validateEnvironment', () => {
   it('rejects placeholder JWT secrets', () => {
     expect(() => validateEnvironment({ ...valid, JWT_SECRET: 'your-long-random-jwt-secret' })).toThrow(/JWT_SECRET/);
   });
-  it('requires secure cookies and rejects zigpass in production', () => {
-    expect(() => validateEnvironment({ ...valid, NODE_ENV: 'production', COOKIE_SECURE: 'false' })).toThrow(/COOKIE_SECURE/);
-    expect(() => validateEnvironment({ ...valid, NODE_ENV: 'production', COOKIE_SECURE: 'true', DATABASE_URL: 'postgresql://u:zigpass@db/x' })).toThrow(/password/);
+  it('rejects zigpass in production', () => {
+    expect(() => validateEnvironment({ ...valid, NODE_ENV: 'production', DATABASE_URL: 'postgresql://u:zigpass@db/x' })).toThrow(/password/);
   });
 });

@@ -55,9 +55,9 @@ services:
       TELEGRAM_ADMIN_ID: ${TELEGRAM_ADMIN_ID}
       BYBIT_WS_HOST: ${BYBIT_WS_HOST:-wss://stream.bybit.com}
     ports:
-      # loopback-only: reachable from the host reverse proxy, never the public internet.
-      # With a domain, the proxy routes /api and /socket.io on APP_ORIGIN -> 127.0.0.1:3069
-      - '127.0.0.1:3069:3069'
+      # Exposed on all interfaces: no domain/TLS yet, reachable directly at http://<server-ip>:3069.
+      # Switch back to '127.0.0.1:3069:3069' once a reverse proxy is in front (see docs/public-access-setup.md).
+      - '3069:3069'
 
   migrate:
     build:
@@ -88,8 +88,9 @@ services:
       HOSTNAME: '0.0.0.0'  # required for Next.js standalone to bind on all interfaces
       PORT: 3070
     ports:
-      # loopback-only: served publicly (if at all) via the reverse proxy on APP_ORIGIN
-      - '127.0.0.1:3070:3070'
+      # Exposed on all interfaces: no domain/TLS yet, reachable directly at http://<server-ip>:3070.
+      # Switch back to '127.0.0.1:3070:3070' once a reverse proxy is in front (see docs/public-access-setup.md).
+      - '3070:3070'
 
 volumes:
   zig_grid_pgdata:
