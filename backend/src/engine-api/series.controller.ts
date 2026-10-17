@@ -1,12 +1,13 @@
 import { Body, Controller, Get, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNumber, IsNumberString, IsOptional, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNumber, IsNumberString, IsOptional, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SeriesService } from './series.service';
 
 class SeriesSettingsDto {
   @IsOptional() @IsIn(['SELL_FIRST', 'BUY_FIRST']) direction?: 'SELL_FIRST' | 'BUY_FIRST';
+  @IsOptional() @IsBoolean() dailyReset?: boolean;
   @IsNumberString() @MaxLength(20) totalZig!: string;
   @IsNumberString() @MaxLength(20) startUsdt!: string;
   @ValidateIf((o) => o.basePrice !== null) @IsNumberString() @MaxLength(20) basePrice!: string | null;

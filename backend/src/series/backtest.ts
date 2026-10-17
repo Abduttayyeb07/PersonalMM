@@ -49,6 +49,8 @@ export interface SeriesBacktestReport {
   status: string;
   statusReason?: string;
   cyclesBySlot: Record<string, number>;
+  /** Daily resets done (0 when the daily reset is off). */
+  resets: number;
   /** Orders accepted by the venue, by what they were for. */
   direction: SeriesDirection;
   /**
@@ -103,8 +105,19 @@ export async function runSeriesBacktest(opts: {
   const priceSeries: Array<[number, number]> = [];
   let low = startPrice;
   let high = startPrice;
+  // Daily reset at 00:00 Pakistan (19:00 UTC): base = close of the candle that ended then.
+  let resets = 0;
+  let prevClose = startPrice;
   for (const c of candles) {
     if (engine.getStatus() !== 'RUNNING') break;
+    if (settings.dailyReset && c.start !== candles[0].start && (c.start - 19 * 3_600_000) % 86_400_000 === 0) {
+      clock.set(c.start);
+      await engine.renewLease();
+      if (await engine.rebase(prevClose, c.start)) resets++;
+      await sim.drain();
+      await engine.idle();
+    }
+    prevClose = c.close;
     if (c.low.lt(low)) low = c.low;
     if (c.high.gt(high)) high = c.high;
     if ((c.start / 60_000) % 15 === 0) priceSeries.push([c.start, c.close.toNumber()]);
@@ -216,6 +229,7 @@ export async function runSeriesBacktest(opts: {
     status: engine.getStatus(),
     statusReason: snap.statusReason,
     cyclesBySlot: bySlot,
+    resets,
     direction,
     placedByKind: count(okPlaces),
     filledByKind: count(fillRows.map((f) => ({ id: f.id, side: f.side }))),

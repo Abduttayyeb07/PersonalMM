@@ -13,6 +13,10 @@ const toRun = (r: any): SeriesRun => ({
   basePrice: new Decimal(r.base_price), qty: new Decimal(r.qty), startZig: new Decimal(r.start_zig), startUsdt: new Decimal(r.start_usdt),
   status: r.status, statusReason: r.status_reason, startedAt: new Date(r.started_at).getTime(),
   stoppedAt: r.stopped_at ? new Date(r.stopped_at).getTime() : null,
+  lastResetAt: r.last_reset_at ? new Date(r.last_reset_at).getTime() : null,
+  resets: Number(r.resets ?? 0),
+  carriedBase: new Decimal(r.carried_base ?? 0),
+  carriedQuote: new Decimal(r.carried_quote ?? 0),
 });
 
 /** Postgres store using plain SQL (see backend/sql/004_series.sql). */
@@ -43,6 +47,14 @@ export class PgSeriesStore implements SeriesStore {
 
   async stopRun(runId: string, reason: string) {
     await this.pool.query(`UPDATE series_runs SET status='STOPPED', status_reason=$2, stopped_at=now() WHERE id=$1 AND status='RUNNING'`, [runId, reason]);
+  }
+
+  async recordReset(runId: string, x: { basePrice: Decimal; qty: Decimal; at: number; carriedBase: Decimal; carriedQuote: Decimal }) {
+    await this.pool.query(
+      `UPDATE series_runs SET base_price=$2, qty=$3, last_reset_at=to_timestamp($4/1000.0), resets=resets+1, carried_base=$5, carried_quote=$6
+       WHERE id=$1`,
+      [runId, x.basePrice.toFixed(), x.qty.toFixed(), x.at, x.carriedBase.toFixed(), x.carriedQuote.toFixed()],
+    );
   }
 
   async getRun(runId: string) {

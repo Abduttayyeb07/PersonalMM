@@ -15,6 +15,8 @@ export interface SeriesSettings {
   stepPct: string;
   buybackPct: string;
   resellPct: string;
+  /** Every day at 00:00 Pakistan time the base moves to the last candle's close and all orders are replaced. */
+  dailyReset?: boolean;
   maxCycles: number | null;
   maxHours: number | null;
 }
@@ -81,6 +83,14 @@ export interface SeriesDetail {
   loops: SeriesLoop[];
   events: Array<{ ts: string; kind: string; detail: Record<string, unknown> }>;
   breaches: string[];
+  dailyReset: {
+    resets: number;
+    lastAt: string | null;
+    nextAt: string | null;
+    /** ZIG left sold (positive) or left bought (negative) by loops a reset closed early. */
+    zigLeftOpen: string;
+    usdtLeftOpen: string;
+  } | null;
 }
 
 export interface SeriesHistoryRow {
@@ -166,6 +176,12 @@ export function describeSeriesEvent(e: SeriesDetail['events'][number]): { text: 
     }
     case 'PAUSED': return { text: `Paused: ${d.reason}`, tone: 'bad' };
     case 'RESUMED': return { text: `Resumed after ${d.after}`, tone: 'good' };
+    case 'REBASED': {
+      const sold = Number(d.zigLeftSold ?? 0);
+      const bought = Number(d.zigLeftBought ?? 0);
+      const left = sold > 0 ? ` ${sold.toLocaleString('en-US')} ZIG stayed sold.` : bought > 0 ? ` ${bought.toLocaleString('en-US')} ZIG stayed bought.` : '';
+      return { text: `Daily reset: base ${d.from} → ${d.to}. All orders replaced: ${d.orders} × ${Number(d.qtyPerOrder).toLocaleString('en-US')} ZIG, ${d.first} to ${d.last}.${Number(d.loopsClosedEarly) > 0 ? ` ${d.loopsClosedEarly} open loops closed early.` : ''}${left}`, tone: 'neutral' };
+    }
     case 'HALTED': return { text: `Halted: ${d.reason}`, tone: 'bad' };
     case 'LEASE_LOST': return { text: 'Another instance took over this series', tone: 'bad' };
     default: return { text: e.kind.toLowerCase().replace(/_/g, ' '), tone: 'neutral' };

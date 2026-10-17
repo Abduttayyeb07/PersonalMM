@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import Decimal from 'decimal.js';
 import { Fill } from '../engine/types';
 import { cloneSlot } from './accounting';
 import { SeriesCommit, SeriesStore } from './store';
@@ -27,6 +28,17 @@ export class MemorySeriesStore implements SeriesStore {
   async stopRun(runId: string, reason: string) {
     const r = this.runs.get(runId);
     if (r && r.status === 'RUNNING') { r.status = 'STOPPED'; r.statusReason = reason; r.stoppedAt = this.now(); }
+  }
+
+  async recordReset(runId: string, x: { basePrice: Decimal; qty: Decimal; at: number; carriedBase: Decimal; carriedQuote: Decimal }) {
+    const r = this.runs.get(runId);
+    if (!r) return;
+    r.basePrice = x.basePrice;
+    r.qty = x.qty;
+    r.lastResetAt = x.at;
+    r.resets = (r.resets ?? 0) + 1;
+    r.carriedBase = x.carriedBase;
+    r.carriedQuote = x.carriedQuote;
   }
 
   async getRun(runId: string) { return this.runs.get(runId) ?? null; }

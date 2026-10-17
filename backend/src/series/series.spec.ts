@@ -375,3 +375,76 @@ describe('percentages with decimals', () => {
     expect(() => buildPlan({ ...s, buybackPct: '1.755' }, D('0.058'), BYBIT_ZIG_SPECS)).toThrow(/2 decimals/);
   });
 });
+
+describe('daily reset (rebase)', () => {
+  it('sell first: cancels everything incl. open buybacks, keeps profit, re-sizes from the ZIG held, ladder from the new base', async () => {
+    const r = await seriesRig({ settings: { basePrice: '0.059', sellPct: '100', dailyReset: true }, startPrice: '0.058' });
+    await r.engine.start();
+    await r.sim.drain();
+    await r.step('0.0640'); // sells #1..#6 fill
+    await r.step('0.0605'); // buybacks #6..#4 fill: 3 loops closed, 3 buybacks still open
+    const profit = r.engine.getCycles().reduce((n, c) => n.plus(c.profit), D(0));
+    expect(r.engine.getCycles()).toHaveLength(3);
+    const zigBefore = (await r.sim.getBalances()).base;
+
+    const summary = await r.engine.rebase(D('0.0605'));
+    await r.sim.drain();
+    await r.engine.idle();
+    expect(summary).not.toBeNull();
+    expect(summary!.loopsClosedEarly).toBe(3); // the 3 open buybacks were dropped
+    const open = await r.sim.getOpenOrders();
+    expect(open).toHaveLength(15);
+    expect(open.every((o) => o.side === 'SELL')).toBe(true);
+    // New ladder: base 0.0605 +3% = 0.06232, then +1% each, sized from the ZIG the account holds now.
+    const prices = open.map((o) => o.price.toFixed()).sort();
+    expect(prices[0]).toBe('0.06232');
+    const qty = zigBefore.div(15).toDecimalPlaces(2, Decimal.ROUND_DOWN);
+    expect(open.every((o) => o.qty.eq(qty))).toBe(true);
+    // Same series: profit and loops are untouched, nothing is ever reused as an order ID.
+    expect(r.engine.getCycles().reduce((n, c) => n.plus(c.profit), D(0)).eq(profit)).toBe(true);
+    expect(new Set(open.map((o) => o.clientOrderId)).size).toBe(15);
+    await r.engine.checkNow();
+    expect(r.engine.snapshot().breaches).toEqual([]);
+    // And it keeps looping after the reset.
+    await r.step('0.0660');
+    await r.step('0.0600');
+    expect(r.engine.getCycles().length).toBeGreaterThan(3);
+    await r.engine.checkNow();
+    expect(r.engine.snapshot().breaches).toEqual([]);
+    expect(r.engine.getStatus()).toBe('RUNNING');
+  });
+
+  it('buy first: new buys below the new base, sized from the USDT held; balances still reconcile', async () => {
+    const r = await seriesRig({ settings: { direction: 'BUY_FIRST', totalZig: '0', startUsdt: '900', basePrice: '0.059', sellPct: '100', dailyReset: true }, startPrice: '0.0600' });
+    await r.engine.start();
+    await r.sim.drain();
+    await r.step('0.0544'); // 6 buys fill
+    await r.step('0.0575'); // 3 sell-backs fill
+    expect(r.engine.getCycles()).toHaveLength(3);
+    const summary = await r.engine.rebase(D('0.0575'));
+    await r.sim.drain();
+    await r.engine.idle();
+    expect(summary!.loopsClosedEarly).toBe(3); // 3 bought, not yet sold back: that ZIG is kept
+    expect(Number(summary!.zigLeftBought)).toBeGreaterThan(0);
+    const open = await r.sim.getOpenOrders();
+    expect(open).toHaveLength(15);
+    expect(open.every((o) => o.side === 'BUY')).toBe(true);
+    expect(open.map((o) => o.price.toFixed()).sort().reverse()[0]).toBe('0.05577'); // 0.0575 -3%, rounded down
+    await r.engine.checkNow();
+    expect(r.engine.snapshot().breaches).toEqual([]);
+    await r.step('0.0530');
+    await r.step('0.0580');
+    await r.engine.checkNow();
+    expect(r.engine.snapshot().breaches).toEqual([]);
+    expect(r.engine.getStatus()).toBe('RUNNING');
+  });
+});
+
+describe('daily reset time', () => {
+  it('is 00:00 Pakistan time, which is 19:00 UTC', async () => {
+    const { lastResetBoundary } = await import('../engine-api/series.service');
+    expect(new Date(lastResetBoundary(Date.parse('2026-10-17T18:59:59Z'))).toISOString()).toBe('2026-10-16T19:00:00.000Z');
+    expect(new Date(lastResetBoundary(Date.parse('2026-10-17T19:00:00Z'))).toISOString()).toBe('2026-10-17T19:00:00.000Z');
+    expect(new Date(lastResetBoundary(Date.parse('2026-10-18T03:00:00Z'))).toISOString()).toBe('2026-10-17T19:00:00.000Z');
+  });
+});

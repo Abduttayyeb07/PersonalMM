@@ -36,6 +36,7 @@ function print(r: SeriesBacktestReport) {
     ['Open at end', `${buy ? r.openBuysEnd : r.openSellsEnd} ${open}, ${buy ? r.openSellsEnd : r.openBuysEnd} ${close}`],
     [buy ? 'ZIG bought, open' : 'ZIG still sold', `${Math.abs(out)} (max ${r.maxZigSold})`],
     ['Account vs hold', `MtM $${r.markToMarketUsd} vs just holding $${r.holdUsd}`],
+    ['Daily resets', r.resets],
     ['Status', `${r.status}${r.statusReason ? ` (${r.statusReason})` : ''}`],
     ['Loops by order', Object.entries(r.cyclesBySlot).map(([k, v]) => `${k}:${v}`).join(' ') || 'none'],
   ];
@@ -59,10 +60,12 @@ async function main() {
     startUsdt: arg('usdt', buyFirst ? '900' : '0')!,
     sellPct: arg('pct', '10')!,
     basePrice: arg('base') ?? null,
+    dailyReset: flag('daily-reset'),
   };
   const variants: Array<{ label: string; settings: SeriesSettings }> = [
     { label: `Series ${buyFirst ? 'buy-first' : 'sell-first'} (${buyFirst ? `${base.startUsdt} USDT` : `${base.totalZig} ZIG`}, ${base.sellPct}% in ${base.orders} ${buyFirst ? 'buys' : 'sells'}, ${buyFirst ? `-${base.firstSellPct}% / -${base.stepPct}% / +${base.resellPct}% sell-back / -${base.buybackPct}% re-buy` : `+${base.firstSellPct}% / +${base.stepPct}% / -${base.buybackPct}% buyback / +${base.resellPct}% re-sell`})`, settings: base },
   ];
+  if (flag('compare-reset')) variants.push({ label: `${variants[0].label} + daily reset`, settings: { ...base, dailyReset: true } });
   if (flag('compare')) {
     variants.push({ label: 'buyback/re-sell 2%', settings: { ...base, buybackPct: '2', resellPct: '2' } });
     variants.push({ label: 'first sell +1%', settings: { ...base, firstSellPct: '1' } });

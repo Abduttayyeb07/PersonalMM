@@ -3,7 +3,7 @@ import Decimal from 'decimal.js';
 import { hostname } from 'os';
 import { PgLease } from '../engine/supervisor/lease';
 import { Alerter, Logger as EngineLogger, VenueSpecs, systemClock } from '../engine/types';
-import { bybitLastPrice, bybitPublicSpecs } from '../engine/venue/bybit-public';
+import { bybitCloseAt, bybitLastPrice, bybitPublicSpecs } from '../engine/venue/bybit-public';
 import { PaperVenue } from '../engine/venue/paper-venue';
 import { owed, reserveOf } from '../series/accounting';
 import { SeriesEngine } from '../series/engine';
@@ -18,6 +18,14 @@ import { EngineApiService } from './engine-api.service';
 const SYMBOL = 'ZIGUSDT';
 const ZERO = new Decimal(0);
 const LEASE_TTL_SECONDS = 30;
+const DAY_MS = 86_400_000;
+/** Daily reset time: 00:00 in Pakistan (UTC+5, no daylight saving) is 19:00 UTC. */
+const RESET_UTC_OFFSET_MS = 19 * 3_600_000;
+
+/** The most recent daily reset moment at or before `now`. */
+export function lastResetBoundary(now: number): number {
+  return Math.floor((now - RESET_UTC_OFFSET_MS) / DAY_MS) * DAY_MS + RESET_UTC_OFFSET_MS;
+}
 
 interface Live {
   run: SeriesRun;
@@ -30,7 +38,7 @@ interface Live {
 
 /** The app's defaults: all of 15,000 ZIG for sale in 15 sells, first at base +3%, 1% apart, -3% / +3%. */
 export function appSeriesDefaults(): SeriesSettings {
-  return { ...defaultSeriesSettings(), sellPct: '100' };
+  return { ...defaultSeriesSettings(), sellPct: '100', dailyReset: true };
 }
 
 /** Default buy-first settings: about the same capital as 15,000 ZIG, held as USDT. */
@@ -48,6 +56,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(SeriesService.name);
   private readonly live = new Map<string, Live>();
   private readonly busy = new Set<string>();
+  private readonly resetting = new Set<string>();
   readonly store: PgSeriesStore;
   private readonly holder = `app:${hostname()}`;
 
@@ -137,6 +146,14 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       id: run.id, label: seriesLabel(run.seriesNo), seriesNo: run.seriesNo, direction,
       status: live ? snap!.status : 'STOPPED', statusReason: live ? snap!.statusReason ?? null : run.statusReason,
       startedAt: new Date(started).toISOString(), stoppedAt: run.stoppedAt ? new Date(run.stoppedAt).toISOString() : null,
+      dailyReset: s.dailyReset ? {
+        resets: run.resets ?? 0,
+        lastAt: run.lastResetAt ? new Date(run.lastResetAt).toISOString() : null,
+        nextAt: live ? new Date(lastResetBoundary(Date.now()) + DAY_MS).toISOString() : null,
+        // What loops closed early by resets left behind: ZIG sold and not bought back (positive) or bought and not sold back (negative).
+        zigLeftOpen: (run.carriedBase ?? ZERO).neg().toFixed(),
+        usdtLeftOpen: (run.carriedQuote ?? ZERO).toFixed(4),
+      } : null,
       settings: s,
       plan: {
         basePrice: run.basePrice.toFixed(), qty: run.qty.toFixed(), orders: s.orders,
@@ -248,6 +265,8 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       const snap = engine.snapshot();
       if (snap.status === 'HALTED' || snap.status === 'STOPPED') {
         void this.forget(userId, engine);
+      } else if (s.dailyReset && (run.lastResetAt ?? run.startedAt) < lastResetBoundary(Date.now())) {
+        void this.dailyReset(userId, tag);
       } else if (s.maxCycles !== null && snap.cyclesCompleted >= s.maxCycles) {
         void this.stop(userId, tag, `reached ${s.maxCycles} completed loops`);
       } else if (s.maxHours !== null && Date.now() - run.startedAt >= s.maxHours * 3_600_000) {
@@ -256,6 +275,26 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     }, 10_000);
     this.live.set(userId, { run, engine, runner, venue, specs, watchdog });
     void runner.done.then(() => this.forget(userId, engine));
+  }
+
+  /**
+   * Moves the user's series to a new base: the close of the Bybit 1-minute candle that ended at the
+   * reset moment. Runs once per day; a reset missed while the backend was down runs when it is back.
+   */
+  private async dailyReset(userId: string, tag: string) {
+    const l = this.live.get(userId);
+    if (!l || this.resetting.has(userId)) return;
+    this.resetting.add(userId);
+    try {
+      const boundary = lastResetBoundary(Date.now());
+      const price = await bybitCloseAt(SYMBOL, boundary);
+      const summary = await l.engine.rebase(price, Date.now());
+      if (summary) this.logger.log(`[${tag}] daily reset: base ${summary.from} -> ${summary.to}, ${summary.orders} orders, ${summary.loopsClosedEarly} open loops closed`);
+    } catch (e) {
+      this.logger.error(`[${tag}] daily reset failed, retrying shortly: ${(e as Error).message}`);
+    } finally {
+      this.resetting.delete(userId);
+    }
   }
 
   /** Drops a series that ended by itself (halted, or lease lost). Its records stay in the database. */
@@ -337,8 +376,8 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       const [{ specs, price }, slots, cycles] = await Promise.all([this.market(), this.store.loadSlots(run.id), this.store.listCycles(run.id)]);
       // Rebuild the simulated balances from the records: what was sold and not bought back is USDT.
       const residual = cycles.reduce((n, c) => n.plus(c.boughtNet).minus(c.soldQty), ZERO);
-      const zig = run.startZig.plus(residual).minus(slots.reduce((n, s) => n.plus(owed(s)), ZERO));
-      const usdt = run.startUsdt.plus(slots.reduce((n, s) => n.plus(reserveOf(s)), ZERO)).plus(cycles.reduce((n, c) => n.plus(c.profit), ZERO));
+      const zig = run.startZig.plus(residual).plus(run.carriedBase ?? ZERO).minus(slots.reduce((n, s) => n.plus(owed(s)), ZERO));
+      const usdt = run.startUsdt.plus(run.carriedQuote ?? ZERO).plus(slots.reduce((n, s) => n.plus(reserveOf(s)), ZERO)).plus(cycles.reduce((n, c) => n.plus(c.profit), ZERO));
       await this.launch(run.ownerId, tag, run, specs, price, { zig, usdt }, { slots, cycles });
       this.logger.log(`[${tag}] resumed series ${seriesLabel(run.seriesNo)} (${cycles.length} loops so far)`);
     } catch (e) {

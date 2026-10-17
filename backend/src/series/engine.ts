@@ -5,8 +5,9 @@ import { Alerter, Book, Clock, Fill, Logger, OrderUpdate, Side, VenueSpecs } fro
 import { VenueAdapter } from '../engine/venue/venue';
 import { applySeriesFill, cloneSlot, newSlot, owed, remaining, reserveOf } from './accounting';
 import { buildSeriesOrderId, parseSeriesOrderId } from './order-id';
+import { buildPlan } from './plan';
 import { SeriesStore } from './store';
-import { Slot, SeriesCycle, SeriesPlan, SeriesRun } from './types';
+import { Slot, SeriesCycle, SeriesPlan, SeriesRun, directionOf } from './types';
 
 const ZERO = new Decimal(0);
 
@@ -513,11 +514,11 @@ export class SeriesEngine {
     const out: string[] = [];
     // Base: what we hold plus what we have sold and not bought back equals what we started with.
     const residual = this.cycles.reduce((n, c) => n.plus(c.boughtNet).minus(c.soldQty), ZERO);
-    const expectedBase = run.startZig.plus(residual).minus(slots.reduce((n, s) => n.plus(owed(s)), ZERO));
+    const expectedBase = run.startZig.plus(residual).plus(run.carriedBase ?? ZERO).minus(slots.reduce((n, s) => n.plus(owed(s)), ZERO));
     const baseTol = specs.lot.mul(this.cycles.length + 2);
     if (balances.base.minus(expectedBase).abs().gt(baseTol)) out.push(`ZIG: hold ${balances.base.toFixed()}, records say ${expectedBase.toFixed()}`);
     // Quote: start + reserve behind open buybacks + profit.
-    const expectedQuote = run.startUsdt.plus(slots.reduce((n, s) => n.plus(reserveOf(s)), ZERO)).plus(this.profit());
+    const expectedQuote = run.startUsdt.plus(run.carriedQuote ?? ZERO).plus(slots.reduce((n, s) => n.plus(reserveOf(s)), ZERO)).plus(this.profit());
     if (balances.quote.minus(expectedQuote).abs().gt('0.05')) out.push(`USDT: hold ${balances.quote.toFixed(4)}, records say ${expectedQuote.toFixed(4)}`);
     // Orders: everything on the exchange belongs to a slot, and every live slot order is there.
     const ours = new Map(slots.filter((s) => s.order).map((s) => [s.order!.clientOrderId, s]));
@@ -574,6 +575,75 @@ export class SeriesEngine {
       cleared.push(next);
     }
     if (cleared.length) await this.d.store.saveSlots(this.runId, cleared);
+  }
+
+  /**
+   * Daily reset: moves the base to `newBase` and replaces the whole ladder. Every order is cancelled,
+   * open loops included. What an open loop already did stays done (ZIG it sold stays USDT, ZIG it
+   * bought stays ZIG) and is carried in the run so the balance checks still add up. The new ladder is
+   * sized from what the account holds now. The series, its loops and its profit continue.
+   */
+  rebase(newBase: Decimal, at = this.d.clock.now()) {
+    return this.enqueue(async () => {
+      if (this.status !== 'RUNNING' && this.status !== 'PAUSED') return null;
+      const { run, specs, store } = this.d;
+      const oldBase = run.basePrice;
+      await this.cancelEverything();
+      // A fill can land between the last event and the cancel: book it before closing the loops.
+      await this.syncMissedFills();
+      if ((this.status as SeriesStatus) === 'HALTED') return null;
+
+      const open = [...this.slots.values()].filter((s) => !s.soldQty.isZero() || !s.boughtGross.isZero());
+      const carriedBase = (run.carriedBase ?? ZERO).minus(open.reduce((n, s) => n.plus(owed(s)), ZERO));
+      const carriedQuote = (run.carriedQuote ?? ZERO).plus(open.reduce((n, s) => n.plus(reserveOf(s)), ZERO));
+
+      // Size the new ladder from what the account holds now (all orders are cancelled, nothing is locked).
+      const balances = await this.d.venue.getBalances();
+      const buyFirst = directionOf(run.settings) === 'BUY_FIRST';
+      let plan: SeriesPlan;
+      try {
+        plan = buildPlan(
+          { ...run.settings, basePrice: newBase.toFixed(), totalZig: balances.base.toFixed(), startUsdt: balances.quote.toFixed() },
+          newBase, specs,
+        );
+      } catch (e) {
+        await this.halt(`daily reset could not build a new ladder at base ${newBase.toFixed()}: ${(e as Error).message}`);
+        return null;
+      }
+
+      // Every slot starts a fresh loop. Its loop number moves on so no order ID is ever reused.
+      const fresh: Slot[] = plan.orders.map((o) => {
+        const prev = this.slots.get(o.slot);
+        const s = newSlot(o.slot, plan.qty, o.price, o.side);
+        s.cycle = (prev?.cycle ?? 0) + 1;
+        return s;
+      });
+      this.slots.clear();
+      for (const s of fresh) this.slots.set(s.slot, s);
+      run.basePrice = plan.basePrice;
+      run.qty = plan.qty;
+      run.lastResetAt = at;
+      run.resets = (run.resets ?? 0) + 1;
+      run.carriedBase = carriedBase;
+      run.carriedQuote = carriedQuote;
+      this.d.plan = plan;
+      await store.saveSlots(this.runId, fresh);
+      await store.recordReset(this.runId, { basePrice: plan.basePrice, qty: plan.qty, at, carriedBase, carriedQuote });
+      const summary = {
+        from: oldBase.toFixed(), to: plan.basePrice.toFixed(), orders: fresh.length, qtyPerOrder: plan.qty.toFixed(),
+        first: plan.orders[0].price.toFixed(), last: plan.orders[plan.orders.length - 1].price.toFixed(),
+        loopsClosedEarly: open.length,
+        zigLeftSold: Decimal.max(open.reduce((n, s) => n.plus(owed(s)), ZERO), 0).toFixed(),
+        zigLeftBought: Decimal.max(open.reduce((n, s) => n.plus(owed(s)), ZERO).neg(), 0).toFixed(),
+        direction: buyFirst ? 'BUY_FIRST' : 'SELL_FIRST',
+      };
+      await store.event(this.runId, 'REBASED', summary);
+      if (this.status === 'RUNNING') {
+        await this.runChecks('reset');
+        if (this.status === 'RUNNING') await this.drive();
+      }
+      return summary;
+    });
   }
 
   /** Heartbeat for the dashboard. */

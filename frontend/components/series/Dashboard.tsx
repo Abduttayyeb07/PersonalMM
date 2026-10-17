@@ -165,6 +165,11 @@ export function DashboardPage({ o }: { o: SeriesOverview }) {
             )}
             {s.balances && <KV label="Balance now" value={`${qty(s.balances.zig)} ZIG · ${usd(s.balances.usdt)}`} />}
             <KV label="Fees paid" value={usd(t.fees)} />
+            <KV label="Daily reset" value={s.dailyReset ? (s.dailyReset.nextAt ? `On · next ${new Date(s.dailyReset.nextAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : 'On') : 'Off'} />
+            {s.dailyReset && s.dailyReset.resets > 0 && <KV label="Resets done" value={String(s.dailyReset.resets)} />}
+            {s.dailyReset && Number(s.dailyReset.zigLeftOpen) !== 0 && (
+              <KV label={Number(s.dailyReset.zigLeftOpen) > 0 ? 'ZIG left sold by resets' : 'ZIG left bought by resets'} value={qty(Math.abs(Number(s.dailyReset.zigLeftOpen)))} />
+            )}
           </Card>
           <Card title="Activity">
             <ActivityList events={s.events} limit={6} />

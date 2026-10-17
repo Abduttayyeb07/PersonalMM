@@ -219,6 +219,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .s-direction-option[aria-checked='true'][data-side='BUY'] { border-color: var(--buy); background: rgba(76, 141, 245, 0.1); }
 @media (max-width: 560px) { .s-direction { grid-template-columns: 1fr; } }
 
+/* On/off option with an explanation (daily reset). */
+.s-toggle { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: 10px; background: var(--sunken); border: 1px solid var(--line); cursor: pointer; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.s-toggle b { display: block; color: var(--ink); font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+.s-toggle input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--gold); flex: 0 0 18px; }
+.s-toggle:has(input:checked) { border-color: var(--gold); background: var(--gold-wash); }
+
 @media (max-width: 1180px) {
   .c-header-context { display: none; }
   .c-header-right { margin-left: auto; }

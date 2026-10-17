@@ -25,3 +25,13 @@ export async function bybitLastPrice(symbol: string): Promise<Decimal> {
   if (!last) throw new Error(`no price for ${symbol}`);
   return new Decimal(last);
 }
+
+/** Close of the 1-minute candle that ended at `endMs` (falls back to the last price if Bybit has no candle). */
+export async function bybitCloseAt(symbol: string, endMs: number): Promise<Decimal> {
+  const { data } = await axios.get('https://api.bybit.com/v5/market/kline', {
+    params: { category: 'spot', symbol, interval: '1', start: endMs - 60_000, end: endMs - 1, limit: 1 },
+    timeout: 10_000,
+  });
+  const close = data?.result?.list?.[0]?.[4];
+  return close ? new Decimal(close) : bybitLastPrice(symbol);
+}

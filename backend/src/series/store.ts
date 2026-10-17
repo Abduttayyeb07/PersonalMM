@@ -12,6 +12,8 @@ export interface SeriesCommit {
 export interface SeriesStore {
   createRun(run: Omit<SeriesRun, 'id' | 'seriesNo' | 'status' | 'statusReason' | 'stoppedAt'>): Promise<SeriesRun>;
   stopRun(runId: string, reason: string): Promise<void>;
+  /** Saves a daily reset: the new base and size, when it happened, and what open loops left behind. */
+  recordReset(runId: string, r: { basePrice: Decimal; qty: Decimal; at: number; carriedBase: Decimal; carriedQuote: Decimal }): Promise<void>;
   getRun(runId: string): Promise<SeriesRun | null>;
   /** Latest run for a user and mode, or null. */
   latestRun(ownerId: string, mode: 'paper' | 'backtest'): Promise<SeriesRun | null>;

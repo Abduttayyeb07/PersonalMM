@@ -30,6 +30,11 @@ export interface SeriesSettings {
   buybackPct: string;
   /** Distance above a filled buy for the next sell: the re-sell (sell first) or the sell-back (buy first). */
   resellPct: string;
+  /**
+   * Every day at 00:00 Pakistan time (19:00 UTC) the base moves to the last 1-minute candle's close,
+   * every order is cancelled (open loops included) and a fresh ladder is placed. Same series.
+   */
+  dailyReset?: boolean;
   /** Optional automatic stop. */
   maxCycles: number | null;
   maxHours: number | null;
@@ -97,6 +102,15 @@ export interface SeriesRun {
   statusReason: string | null;
   startedAt: number;
   stoppedAt: number | null;
+  /** When the ladder was last moved to a new base by the daily reset (null: never). */
+  lastResetAt?: number | null;
+  resets?: number;
+  /**
+   * Base and quote left changed by loops that a reset closed early: ZIG sold and not bought back is
+   * negative base and positive quote. Kept so the balance checks still add up.
+   */
+  carriedBase?: Decimal;
+  carriedQuote?: Decimal;
 }
 
 export interface PlannedOrder {

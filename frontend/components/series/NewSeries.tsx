@@ -9,6 +9,7 @@ import { Card, ConfirmDialog } from '../console/ui';
 
 type Draft = Record<'basePrice' | 'totalZig' | 'startUsdt' | 'sellPct' | 'orders' | 'firstSellPct' | 'stepPct' | 'buybackPct' | 'resellPct' | 'maxHours', string> & {
   direction: SeriesDirection;
+  dailyReset: boolean;
 };
 
 const toDraft = (s: SeriesSettings): Draft => ({
@@ -16,6 +17,7 @@ const toDraft = (s: SeriesSettings): Draft => ({
   basePrice: s.basePrice ?? '', totalZig: s.totalZig, startUsdt: s.startUsdt, sellPct: s.sellPct, orders: String(s.orders),
   firstSellPct: s.firstSellPct, stepPct: s.stepPct, buybackPct: s.buybackPct, resellPct: s.resellPct,
   maxHours: s.maxHours === null ? '' : String(s.maxHours),
+  dailyReset: !!s.dailyReset,
 });
 
 const fromDraft = (d: Draft): SeriesSettings => ({
@@ -24,6 +26,7 @@ const fromDraft = (d: Draft): SeriesSettings => ({
   orders: Number(d.orders), firstSellPct: d.firstSellPct.trim(), stepPct: d.stepPct.trim(),
   buybackPct: d.buybackPct.trim(), resellPct: d.resellPct.trim(), maxCycles: null,
   maxHours: d.maxHours.trim() ? Number(d.maxHours) : null,
+  dailyReset: d.dailyReset,
 });
 
 function Field({ id, label, hint, value, onChange, suffix, placeholder }: {
@@ -89,7 +92,7 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
   function pickDirection(direction: SeriesDirection) {
     if (direction === draft.direction) return;
     const defaults = direction === 'BUY_FIRST' ? o.buyFirstDefaults : o.defaults;
-    setDraft((d) => ({ ...toDraft(defaults), basePrice: d.basePrice, maxHours: d.maxHours }));
+    setDraft((d) => ({ ...toDraft(defaults), basePrice: d.basePrice, maxHours: d.maxHours, dailyReset: d.dailyReset }));
   }
 
   // Live preview of the exact orders these settings would place (debounced).
@@ -166,6 +169,15 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
               </>
             )}
             <Field id="maxHours" label="Stop by itself after" value={draft.maxHours} onChange={set('maxHours')} suffix="hours" placeholder="never" hint="Optional. Empty runs until you stop it." />
+            <label htmlFor="series-dailyReset" className="s-toggle sm:col-span-2">
+              <input id="series-dailyReset" type="checkbox" checked={draft.dailyReset}
+                     onChange={(e) => setDraft((d) => ({ ...d, dailyReset: e.target.checked }))} />
+              <span>
+                <b>Reset the base every day at 12:00 midnight (Pakistan)</b>
+                The base moves to the last 1-minute candle&apos;s close, every order is cancelled (open loops too) and a fresh ladder is placed from the new base.
+                Same series: profit and loops keep adding up. Sold ZIG from a closed-early loop stays USDT; bought ZIG stays ZIG.
+              </span>
+            </label>
           </div>
           {previewError && <p className="c-error" role="alert">{previewError}</p>}
           {error && <p className="c-error" role="alert">{error}</p>}
