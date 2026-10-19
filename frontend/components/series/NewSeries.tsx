@@ -1,19 +1,21 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
-import { errorMessage, price, qty, usd } from '../../lib/engine';
+import { errorMessage, usd } from '../../lib/engine';
 import {
-  SeriesDirection, SeriesOverview, SeriesPreview, SeriesSettings, previewSeries, seriesLabelFor, startSeries, stopSeries, words,
+  PAIRS, SeriesDirection, SeriesOverview, SeriesPreview, SeriesSettings, SeriesSymbol, pairFmt, previewSeries, seriesLabelFor, startSeries, words,
 } from '../../lib/series';
-import { Card, ConfirmDialog } from '../console/ui';
+import { Card } from '../console/ui';
 
 type Draft = Record<'basePrice' | 'totalZig' | 'startUsdt' | 'sellPct' | 'orders' | 'firstSellPct' | 'stepPct' | 'buybackPct' | 'resellPct' | 'maxHours', string> & {
   direction: SeriesDirection;
+  symbol: SeriesSymbol;
   dailyReset: boolean;
 };
 
 const toDraft = (s: SeriesSettings): Draft => ({
   direction: s.direction ?? 'SELL_FIRST',
+  symbol: s.symbol ?? 'ZIGUSDT',
   basePrice: s.basePrice ?? '', totalZig: s.totalZig, startUsdt: s.startUsdt, sellPct: s.sellPct, orders: String(s.orders),
   firstSellPct: s.firstSellPct, stepPct: s.stepPct, buybackPct: s.buybackPct, resellPct: s.resellPct,
   maxHours: s.maxHours === null ? '' : String(s.maxHours),
@@ -21,6 +23,7 @@ const toDraft = (s: SeriesSettings): Draft => ({
 });
 
 const fromDraft = (d: Draft): SeriesSettings => ({
+  symbol: d.symbol,
   direction: d.direction,
   totalZig: d.totalZig.trim() || '0', startUsdt: d.startUsdt.trim() || '0', basePrice: d.basePrice.trim() || null, sellPct: d.sellPct.trim(),
   orders: Number(d.orders), firstSellPct: d.firstSellPct.trim(), stepPct: d.stepPct.trim(),
@@ -72,27 +75,35 @@ const FIRST_PRESETS = ['1', '1.5', '2', '2.5', '3'];
 const STEP_PRESETS = ['0.5', '0.75', '1', '1.5', '2'];
 const LOOP_PRESETS = ['1.5', '1.75', '1.9', '2', '2.5', '3'];
 
-const DIRECTIONS: Array<{ id: SeriesDirection; title: string; line: string }> = [
-  { id: 'SELL_FIRST', title: 'Sell first', line: 'Start with ZIG. Sells above the base; earns when ZIG rises and comes back.' },
-  { id: 'BUY_FIRST', title: 'Buy first', line: 'Start with USDT. Buys below the base; earns when ZIG dips and comes back.' },
+const directions = (asset: string): Array<{ id: SeriesDirection; title: string; line: string }> => [
+  { id: 'SELL_FIRST', title: 'Sell first', line: `Start with ${asset}. Sells above the base; earns when ${asset} rises and comes back.` },
+  { id: 'BUY_FIRST', title: 'Buy first', line: `Start with USDT. Buys below the base; earns when ${asset} dips and comes back.` },
 ];
 
-export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: () => void }) {
-  const [draft, setDraft] = useState<Draft>(() => toDraft(o.series?.settings ?? o.defaults));
+export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: (id: string) => void }) {
+  const [draft, setDraft] = useState<Draft>(() => toDraft(o.defaults.ZIGUSDT.SELL_FIRST));
   const [preview, setPreview] = useState<SeriesPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState(false);
   const set = (k: keyof Draft) => (v: string) => setDraft((d) => ({ ...d, [k]: v }));
-  const nextLabel = seriesLabelFor((o.history[0]?.seriesNo ?? 0) + 1);
-  const w = words(draft.direction);
+  const nextLabel = seriesLabelFor(Math.max(0, ...o.runs.map((r) => r.seriesNo)) + 1);
+  const fmt = pairFmt(draft.symbol);
+  const w = words(draft.direction, fmt.asset);
+  const full = o.running >= o.maxRunning;
+  const market = o.markets[draft.symbol];
 
-  // Switching direction loads that direction's defaults, keeping the base price you typed.
-  function pickDirection(direction: SeriesDirection) {
-    if (direction === draft.direction) return;
-    const defaults = direction === 'BUY_FIRST' ? o.buyFirstDefaults : o.defaults;
-    setDraft((d) => ({ ...toDraft(defaults), basePrice: d.basePrice, maxHours: d.maxHours, dailyReset: d.dailyReset }));
+  // Switching direction or pair loads its starting amounts; your percentages, auto-stop and daily
+  // reset stay. A new pair also clears the base (a ZIG price means nothing for BTC).
+  function pick(symbol: SeriesSymbol, direction: SeriesDirection) {
+    if (symbol === draft.symbol && direction === draft.direction) return;
+    const defaults = toDraft(o.defaults[symbol][direction]);
+    setDraft((d) => ({
+      ...defaults,
+      basePrice: symbol === d.symbol ? d.basePrice : '',
+      orders: d.orders, firstSellPct: d.firstSellPct, stepPct: d.stepPct, buybackPct: d.buybackPct, resellPct: d.resellPct,
+      maxHours: d.maxHours, dailyReset: d.dailyReset,
+    }));
   }
 
   // Live preview of the exact orders these settings would place (debounced).
@@ -114,9 +125,8 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
     setBusy(true);
     setError(null);
     try {
-      if (o.running) await stopSeries();
-      await startSeries(fromDraft(draft));
-      onStarted();
+      const { data } = await startSeries(fromDraft(draft));
+      onStarted(data.id);
     } catch (e) {
       setError(errorMessage(e, 'The series could not start.'));
     } finally {
@@ -126,20 +136,26 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    if (o.running) setConfirm(true);
-    else void begin();
+    if (!full) void begin();
   }
 
-  const current = o.series;
-  const shown = preview?.direction === draft.direction ? preview : null;
+  const shown = preview?.direction === draft.direction && preview?.symbol === draft.symbol ? preview : null;
   return (
     <div className="c-grid-main">
-      <Card title={`Series ${nextLabel}`} sub="Choose which side opens each loop, set the base, and press start. Every order is a post-only limit order; nothing is sent at market.">
+      <Card title={`New simulation · Series ${nextLabel}`} sub={`Runs next to your other simulations, with its own paper wallet. ${o.running} of ${o.maxRunning} running now. Every order is a post-only limit order; nothing is sent at market.`}>
         <form onSubmit={submit} className="grid gap-7">
+          <div className="c-segment" role="radiogroup" aria-label="Pair">
+            {(Object.keys(PAIRS) as SeriesSymbol[]).map((sym) => (
+              <button key={sym} type="button" role="radio" id={`series-pair-${sym}`} aria-checked={draft.symbol === sym} onClick={() => pick(sym, draft.direction)}>
+                {PAIRS[sym].label}
+                {o.markets[sym] && <span className="num" style={{ marginLeft: 8, color: 'var(--muted)' }}>{pairFmt(sym).price(o.markets[sym]!)}</span>}
+              </button>
+            ))}
+          </div>
           <div className="s-direction" role="radiogroup" aria-label="Which side opens each loop">
-            {DIRECTIONS.map((d) => (
+            {directions(fmt.asset).map((d) => (
               <button key={d.id} type="button" role="radio" aria-checked={draft.direction === d.id} id={`series-direction-${d.id}`}
-                      className="s-direction-option" data-side={d.id === 'BUY_FIRST' ? 'BUY' : 'SELL'} onClick={() => pickDirection(d.id)}>
+                      className="s-direction-option" data-side={d.id === 'BUY_FIRST' ? 'BUY' : 'SELL'} onClick={() => pick(draft.symbol, d.id)}>
                 <b>{d.title}</b>
                 <span>{d.line}</span>
               </button>
@@ -147,12 +163,12 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
           </div>
 
           <div className="grid gap-6 sm:grid-cols-2">
-            <Field id="basePrice" label="Base price" placeholder={o.marketPrice ? `${o.marketPrice} (market)` : 'market price'} value={draft.basePrice} onChange={set('basePrice')} suffix="USDT"
+            <Field id="basePrice" label="Base price" placeholder={market ? `${market} (market)` : 'market price'} value={draft.basePrice} onChange={set('basePrice')} suffix="USDT"
                    hint="Nothing trades at the base. Empty uses the market price at start." />
             {w.buy
               ? <Field id="startUsdt" label="USDT to buy with" value={draft.startUsdt} onChange={set('startUsdt')} suffix="USDT" />
-              : <Field id="totalZig" label="Total ZIG" value={draft.totalZig} onChange={set('totalZig')} suffix="ZIG" />}
-            <Field id="sellPct" label={w.buy ? 'Share of USDT used' : 'Share of ZIG for sale'} value={draft.sellPct} onChange={set('sellPct')} suffix="%"
+              : <Field id="totalZig" label={`Total ${fmt.asset}`} value={draft.totalZig} onChange={set('totalZig')} suffix={fmt.asset} />}
+            <Field id="sellPct" label={w.buy ? 'Share of USDT used' : `Share of ${fmt.asset} for sale`} value={draft.sellPct} onChange={set('sellPct')} suffix="%"
                    hint={w.buy ? '100% spreads all of it over the buys.' : '100% puts all of it into the sells.'} />
             <Field id="orders" label={`Number of ${w.opening}`} value={draft.orders} onChange={set('orders')} />
             <PctField id="firstSellPct" label={w.buy ? 'First buy below base' : 'First sell above base'} value={draft.firstSellPct} onChange={set('firstSellPct')} presets={FIRST_PRESETS} />
@@ -175,38 +191,31 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
               <span>
                 <b>Reset the base every day at 12:00 midnight (Pakistan)</b>
                 The base moves to the last 1-minute candle&apos;s close, every order is cancelled (open loops too) and a fresh ladder is placed from the new base.
-                Same series: profit and loops keep adding up. Sold ZIG from a closed-early loop stays USDT; bought ZIG stays ZIG.
+                Same series: profit and loops keep adding up. Sold {fmt.asset} from a closed-early loop stays USDT; bought {fmt.asset} stays {fmt.asset}.
               </span>
             </label>
           </div>
           {previewError && <p className="c-error" role="alert">{previewError}</p>}
           {error && <p className="c-error" role="alert">{error}</p>}
           <div className="flex flex-wrap items-center gap-4">
-            <button type="submit" className="c-btn c-btn-primary" disabled={busy || !!previewError || !shown}>
-              {busy ? 'Starting…' : o.running && current ? `Stop Series ${current.label} and start Series ${nextLabel}` : `Start Series ${nextLabel} (${w.name.toLowerCase()})`}
+            <button type="submit" className="c-btn c-btn-primary" disabled={busy || full || !!previewError || !shown}>
+              {busy ? 'Starting…' : `Start ${fmt.label} · Series ${nextLabel} (${w.name.toLowerCase()})`}
             </button>
-            <span className="text-[13px]" style={{ color: 'var(--muted)' }}>Paper trading on live Bybit prices. No real orders.</span>
+            <span className="text-[13px]" style={{ color: full ? 'var(--bad)' : 'var(--muted)' }}>
+              {full ? `${o.maxRunning} simulations are running, the most at once. Stop one to start another.` : 'Paper trading on live Bybit prices. No real orders.'}
+            </span>
           </div>
         </form>
-        {confirm && current && (
-          <ConfirmDialog
-            title={`Replace Series ${current.label}?`}
-            body={`Every order of Series ${current.label} is cancelled, its profit stays recorded, and Series ${nextLabel} starts (${w.name.toLowerCase()}) at the new base.`}
-            confirmLabel={`Start Series ${nextLabel}`}
-            onConfirm={begin}
-            onClose={() => setConfirm(false)}
-          />
-        )}
       </Card>
 
-      <Card title="Orders it will place" sub={shown ? `${w.name} · market ${price(shown.marketPrice)} · base ${price(shown.basePrice)}` : 'Fill in the settings to see the orders.'}>
+      <Card title="Orders it will place" sub={shown ? `${fmt.label} · ${w.name} · market ${fmt.price(shown.marketPrice)} · base ${fmt.price(shown.basePrice)}` : 'Fill in the settings to see the orders.'}>
         {shown && (
           <>
             <div className="mb-4 grid grid-cols-2 gap-3 text-[13px]">
-              <div className="s-mini"><span>Each order</span><b className="num">{qty(shown.qtyPerOrder)} ZIG</b></div>
+              <div className="s-mini"><span>Each order</span><b className="num">{fmt.amount(shown.qtyPerOrder)} {fmt.asset}</b></div>
               <div className="s-mini">
-                <span>{w.buy ? 'USDT for the buys' : 'ZIG for sale'}</span>
-                <b className="num">{w.buy ? usd(shown.usdtForBuys) : qty(shown.zigForSale)}</b>
+                <span>{w.buy ? 'USDT for the buys' : `${fmt.asset} for sale`}</span>
+                <b className="num">{w.buy ? usd(shown.usdtForBuys) : fmt.amount(shown.zigForSale)}</b>
               </div>
               <div className="s-mini"><span>Profit per loop</span><b className="num" style={{ color: 'var(--profit-text)' }}>≈ {usd(shown.loopProfit)}</b></div>
               <div className="s-mini"><span>{w.buy ? 'Below market' : 'Above market'}</span><b className="num">{shown.waitingForMarket} of {shown.orders.length}</b></div>
@@ -219,11 +228,11 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
                     <tr key={r.slot}>
                       <td className="num strong">#{r.slot}</td>
                       <td className="r num" style={{ color: r.side === 'BUY' ? 'var(--buy)' : 'var(--sell)' }}>
-                        {price(r.price)}
-                        {r.restsAt !== r.price && <span className="block text-[11px]" style={{ color: 'var(--muted)' }}>rests at {price(r.restsAt)}</span>}
+                        {fmt.price(r.price)}
+                        {r.restsAt !== r.price && <span className="block text-[11px]" style={{ color: 'var(--muted)' }}>rests at {fmt.price(r.restsAt)}</span>}
                       </td>
                       <td className="r num">{Number(r.value).toFixed(2)}</td>
-                      <td className="r num" style={{ color: r.side === 'BUY' ? 'var(--sell)' : 'var(--buy)' }}>{price(r.nextAt)}</td>
+                      <td className="r num" style={{ color: r.side === 'BUY' ? 'var(--sell)' : 'var(--buy)' }}>{fmt.price(r.nextAt)}</td>
                     </tr>
                   ))}
                 </tbody>

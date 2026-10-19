@@ -4,7 +4,8 @@ import { candlesFor } from '../src/engine/backtest/candles';
 import { BYBIT_ZIG_SPECS } from '../src/engine/testing';
 import { runSeriesBacktest, SeriesBacktestReport } from '../src/series/backtest';
 import { defaultSeriesSettings } from '../src/series/plan';
-import { SeriesSettings } from '../src/series/types';
+import { SeriesSettings, SeriesSymbol } from '../src/series/types';
+import { bybitPublicSpecs } from '../src/engine/venue/bybit-public';
 
 /**
  * Replays real Bybit ZIGUSDT 1-minute candles through the series engine.
@@ -19,7 +20,7 @@ function arg(name: string, fallback?: string): string | undefined {
 }
 const flag = (name: string) => process.argv.includes(`--${name}`);
 
-function print(r: SeriesBacktestReport) {
+function print(r: SeriesBacktestReport, asset = 'ZIG') {
   const buy = r.direction === 'BUY_FIRST';
   const open = buy ? 'buys' : 'sells';
   const close = buy ? 'sell-backs' : 'buybacks';
@@ -27,14 +28,14 @@ function print(r: SeriesBacktestReport) {
   const rows: Array<[string, string | number]> = [
     ['Period', `${r.from.slice(0, 16)} -> ${r.to.slice(0, 16)} (${r.days} days, ${r.candles} candles)`],
     ['Price', `start ${r.startPrice}, end ${r.endPrice}, low ${r.lowPrice}, high ${r.highPrice}`],
-    [`Base / ${open}`, `base ${r.basePrice}: ${open} ${r.firstSell} ... ${r.lastSell}, ${r.qtyPerOrder} ZIG each`],
+    [`Base / ${open}`, `base ${r.basePrice}: ${open} ${r.firstSell} ... ${r.lastSell}, ${r.qtyPerOrder} ${asset} each`],
     ['Orders placed', `${r.ordersPlaced} (rejected ${r.ordersRejected}): ${r.placedByKind.firstSells} first ${open}, ${r.placedByKind.buybacks} ${close}, ${r.placedByKind.resells} re-${open}`],
     ['Fills', `${r.sellFills} sell, ${r.buyFills} buy (${r.sellFills + r.buyFills} total)`],
     [`${buy ? 'Buys' : 'Sells'} completed`, r.sellsCompleted],
     ['Loops completed', `${r.cyclesCompleted} (${r.cyclesPerDay}/day)`],
     ['Realised profit', `$${r.realisedProfitUsd} (fees paid $${r.feesPaidUsd})`],
     ['Open at end', `${buy ? r.openBuysEnd : r.openSellsEnd} ${open}, ${buy ? r.openSellsEnd : r.openBuysEnd} ${close}`],
-    [buy ? 'ZIG bought, open' : 'ZIG still sold', `${Math.abs(out)} (max ${r.maxZigSold})`],
+    [buy ? `${asset} bought, open` : `${asset} still sold`, `${Math.abs(out)} (max ${r.maxZigSold})`],
     ['Account vs hold', `MtM $${r.markToMarketUsd} vs just holding $${r.holdUsd}`],
     ['Daily resets', r.resets],
     ['Status', `${r.status}${r.statusReason ? ` (${r.statusReason})` : ''}`],
@@ -49,21 +50,29 @@ function print(r: SeriesBacktestReport) {
 
 async function main() {
   const days = Number(arg('days', '30'));
-  let candles = await candlesFor('ZIGUSDT', days, join('engine-data', `ZIGUSDT-1m-${days}d.csv`), flag('refresh'));
+  const symbol = (arg('symbol', 'ZIGUSDT')!.toUpperCase()) as SeriesSymbol;
+  const asset = symbol.replace(/USDT$/, '');
+  const specs = symbol === 'ZIGUSDT' ? BYBIT_ZIG_SPECS : await bybitPublicSpecs(symbol);
+  let candles = await candlesFor(symbol, days, join('engine-data', `${symbol}-1m-${days}d.csv`), flag('refresh'));
   const lastDays = arg('last-days');
   if (lastDays) candles = candles.filter((c) => c.start >= candles[candles.length - 1].start - Number(lastDays) * 86_400_000);
   const buyFirst = arg('direction', 'sell') === 'buy';
   const base: SeriesSettings = {
     ...defaultSeriesSettings(),
+    symbol,
     direction: buyFirst ? 'BUY_FIRST' : 'SELL_FIRST',
-    totalZig: arg('zig', buyFirst ? '0' : '15000')!,
-    startUsdt: arg('usdt', buyFirst ? '900' : '0')!,
+    totalZig: arg('zig', buyFirst ? '0' : symbol === 'BTCUSDT' ? '0.1' : '15000')!,
+    startUsdt: arg('usdt', buyFirst ? (symbol === 'BTCUSDT' ? '8000' : '900') : '0')!,
     sellPct: arg('pct', '10')!,
     basePrice: arg('base') ?? null,
     dailyReset: flag('daily-reset'),
+    firstSellPct: arg('first', '3')!,
+    stepPct: arg('step', '1')!,
+    buybackPct: arg('buyback', arg('loop', '3'))!,
+    resellPct: arg('resell', arg('loop', '3'))!,
   };
   const variants: Array<{ label: string; settings: SeriesSettings }> = [
-    { label: `Series ${buyFirst ? 'buy-first' : 'sell-first'} (${buyFirst ? `${base.startUsdt} USDT` : `${base.totalZig} ZIG`}, ${base.sellPct}% in ${base.orders} ${buyFirst ? 'buys' : 'sells'}, ${buyFirst ? `-${base.firstSellPct}% / -${base.stepPct}% / +${base.resellPct}% sell-back / -${base.buybackPct}% re-buy` : `+${base.firstSellPct}% / +${base.stepPct}% / -${base.buybackPct}% buyback / +${base.resellPct}% re-sell`})`, settings: base },
+    { label: `Series ${buyFirst ? 'buy-first' : 'sell-first'} (${buyFirst ? `${base.startUsdt} USDT` : `${base.totalZig} ${asset}`}, ${base.sellPct}% in ${base.orders} ${buyFirst ? 'buys' : 'sells'}, ${buyFirst ? `-${base.firstSellPct}% / -${base.stepPct}% / +${base.resellPct}% sell-back / -${base.buybackPct}% re-buy` : `+${base.firstSellPct}% / +${base.stepPct}% / -${base.buybackPct}% buyback / +${base.resellPct}% re-sell`})`, settings: base },
   ];
   if (flag('compare-reset')) variants.push({ label: `${variants[0].label} + daily reset`, settings: { ...base, dailyReset: true } });
   if (flag('compare')) {
@@ -72,8 +81,8 @@ async function main() {
   }
   const reports: SeriesBacktestReport[] = [];
   for (const v of variants) {
-    const r = await runSeriesBacktest({ label: v.label, settings: v.settings, specs: BYBIT_ZIG_SPECS, candles });
-    print(r);
+    const r = await runSeriesBacktest({ label: v.label, settings: v.settings, specs, candles });
+    print(r, asset);
     reports.push(r);
   }
   mkdirSync('engine-data', { recursive: true });

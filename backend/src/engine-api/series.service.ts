@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { hostname } from 'os';
 import { PgLease } from '../engine/supervisor/lease';
@@ -12,15 +12,18 @@ import { PgSeriesStore } from '../series/pg-store';
 import { roundDown } from '../engine/lattice';
 import { SeriesSettingsError, buildPlan, buybackPrice, defaultSeriesSettings, resellPrice } from '../series/plan';
 import { SeriesRunner } from '../series/runner';
-import { SeriesCycle, SeriesRun, SeriesSettings, Slot, directionOf, orderKind, seriesLabel } from '../series/types';
+import {
+  SERIES_PAIRS, SeriesCycle, SeriesDirection, SeriesRun, SeriesSettings, SeriesSymbol, Slot, assetOf, directionOf, orderKind, seriesLabel, symbolOf,
+} from '../series/types';
 import { EngineApiService } from './engine-api.service';
 
-const SYMBOL = 'ZIGUSDT';
 const ZERO = new Decimal(0);
 const LEASE_TTL_SECONDS = 30;
 const DAY_MS = 86_400_000;
 /** Daily reset time: 00:00 in Pakistan (UTC+5, no daylight saving) is 19:00 UTC. */
 const RESET_UTC_OFFSET_MS = 19 * 3_600_000;
+/** Simulations one user can run at the same time. */
+export const MAX_RUNNING_PER_USER = 5;
 
 /** The most recent daily reset moment at or before `now`. */
 export function lastResetBoundary(now: number): number {
@@ -28,6 +31,7 @@ export function lastResetBoundary(now: number): number {
 }
 
 interface Live {
+  ownerId: string;
   run: SeriesRun;
   engine: SeriesEngine;
   runner: SeriesRunner;
@@ -36,27 +40,41 @@ interface Live {
   watchdog: NodeJS.Timeout;
 }
 
-/** The app's defaults: all of 15,000 ZIG for sale in 15 sells, first at base +3%, 1% apart, -3% / +3%. */
-export function appSeriesDefaults(): SeriesSettings {
-  return { ...defaultSeriesSettings(), sellPct: '100', dailyReset: true };
+/**
+ * The app's defaults per pair and direction. The percentages are the same for every pair (first order
+ * 3% from the base, 1% apart, 3% buyback / re-sell); only the starting amounts differ.
+ */
+export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesDirection = 'SELL_FIRST'): SeriesSettings {
+  const amounts: Record<SeriesSymbol, { base: string; usdt: string }> = {
+    ZIGUSDT: { base: '15000', usdt: '900' },
+    BTCUSDT: { base: '0.1', usdt: '8000' },
+  };
+  const a = amounts[symbol];
+  return {
+    ...defaultSeriesSettings(), symbol, direction, sellPct: '100', dailyReset: true,
+    totalZig: direction === 'BUY_FIRST' ? '0' : a.base,
+    startUsdt: direction === 'BUY_FIRST' ? a.usdt : '0',
+  };
 }
 
-/** Default buy-first settings: about the same capital as 15,000 ZIG, held as USDT. */
-export function appBuyFirstDefaults(): SeriesSettings {
-  return { ...appSeriesDefaults(), direction: 'BUY_FIRST', totalZig: '0', startUsdt: '900' };
-}
+/** Kept for callers from before pairs existed. */
+export const appSeriesDefaults = () => appDefaults('ZIGUSDT', 'SELL_FIRST');
+export const appBuyFirstDefaults = () => appDefaults('ZIGUSDT', 'BUY_FIRST');
 
 /**
  * Series paper runs: the exact series engine on live Bybit prices, with simulated fills and balances.
- * Each user has at most one running series; their runs, orders and fills are theirs alone. A series
- * still running when the backend stops is resumed when it starts again.
+ * A user can run several at once (up to MAX_RUNNING_PER_USER), on ZIG/USDT or BTC/USDT, each with its
+ * own paper wallet, orders and lock. A user only ever sees and controls their own. A series still
+ * running when the backend stops is resumed when it starts again.
  */
 @Injectable()
 export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(SeriesService.name);
+  /** Running simulations by run id. */
   private readonly live = new Map<string, Live>();
-  private readonly busy = new Set<string>();
+  private readonly starting = new Map<string, number>();
   private readonly resetting = new Set<string>();
+  private readonly priceCache = new Map<SeriesSymbol, { at: number; price: string | null }>();
   readonly store: PgSeriesStore;
   private readonly holder = `app:${hostname()}`;
 
@@ -75,22 +93,71 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     return { send: async (t) => this.logger.log(`[${tag}] ${t.replace(/\n/g, ' | ')}`) };
   }
 
+  private leaseScope(userId: string, runId: string) {
+    return `${userId}/series-paper/${runId}`;
+  }
+
+  private runningFor(userId: string) {
+    return [...this.live.values()].filter((l) => l.ownerId === userId);
+  }
+
+  /** Last prices of every pair, cached for a few seconds (the dashboard polls). */
+  private async marketPrices(): Promise<Record<string, string | null>> {
+    const out: Record<string, string | null> = {};
+    await Promise.all((Object.keys(SERIES_PAIRS) as SeriesSymbol[]).map(async (sym) => {
+      const hit = this.priceCache.get(sym);
+      if (hit && Date.now() - hit.at < 3000) { out[sym] = hit.price; return; }
+      let price: string | null = null;
+      try { price = (await bybitLastPrice(sym)).toFixed(); } catch { /* market price is optional here */ }
+      this.priceCache.set(sym, { at: Date.now(), price });
+      out[sym] = price;
+    }));
+    return out;
+  }
+
   // ── Read model ───────────────────────────────────────────────────────────────────────────────
 
+  /** Every simulation of the user (running ones first), with the numbers a tab or a history row needs. */
   async overview(userId: string) {
-    const live = this.live.get(userId);
-    const latest = live?.run ?? (await this.store.latestRun(userId, 'paper'));
-    let market: string | null = null;
-    try { market = (await bybitLastPrice(SYMBOL)).toFixed(); } catch { /* market price is optional here */ }
-    const history = (await this.store.runSummaries(userId, 'paper', 30)).map((h) => ({
-      id: h.run.id, label: seriesLabel(h.run.seriesNo), seriesNo: h.run.seriesNo, direction: directionOf(h.run.settings), basePrice: h.run.basePrice.toFixed(),
-      qty: h.run.qty.toFixed(), orders: h.run.settings.orders, totalZig: h.run.settings.totalZig,
-      startedAt: new Date(h.run.startedAt).toISOString(), stoppedAt: h.run.stoppedAt ? new Date(h.run.stoppedAt).toISOString() : null,
-      status: h.run.status, statusReason: h.run.statusReason, cycles: h.cycles, profit: h.profit.toFixed(4),
-    }));
-    const base = { defaults: appSeriesDefaults(), buyFirstDefaults: appBuyFirstDefaults(), marketPrice: market, history };
-    if (!latest) return { ...base, running: false, series: null };
-    return { ...base, running: !!live, series: await this.describe(latest, live) };
+    const [rows, markets] = await Promise.all([this.store.runSummaries(userId, 'paper', 50), this.marketPrices()]);
+    const runs = rows.map((h) => {
+      const l = this.live.get(h.run.id);
+      const snap = l?.engine.snapshot();
+      return {
+        id: h.run.id, label: seriesLabel(h.run.seriesNo), seriesNo: h.run.seriesNo,
+        symbol: symbolOf(h.run.settings), asset: assetOf(h.run.settings), direction: directionOf(h.run.settings),
+        basePrice: h.run.basePrice.toFixed(), qty: h.run.qty.toFixed(), orders: h.run.settings.orders, totalZig: h.run.settings.totalZig,
+        startUsdt: h.run.settings.startUsdt, dailyReset: !!h.run.settings.dailyReset,
+        startedAt: new Date(h.run.startedAt).toISOString(), stoppedAt: h.run.stoppedAt ? new Date(h.run.stoppedAt).toISOString() : null,
+        // RUNNING in the database but not in memory means it is being resumed after a restart.
+        status: l ? snap!.status : h.run.status === 'RUNNING' ? 'STARTING' : 'STOPPED',
+        statusReason: l ? snap!.statusReason ?? null : h.run.statusReason,
+        live: !!l, openOrders: snap?.liveOrders ?? 0,
+        cycles: h.cycles, profit: h.profit.toFixed(4),
+      };
+    });
+    const pairs = Object.entries(SERIES_PAIRS).map(([symbol, p]) => ({ symbol, asset: p.asset }));
+    const defaults: Record<string, Record<string, SeriesSettings>> = {};
+    for (const { symbol } of pairs) {
+      defaults[symbol] = { SELL_FIRST: appDefaults(symbol as SeriesSymbol, 'SELL_FIRST'), BUY_FIRST: appDefaults(symbol as SeriesSymbol, 'BUY_FIRST') };
+    }
+    const running = runs.filter((r) => r.status !== 'STOPPED');
+    return {
+      runs, running: running.length, maxRunning: MAX_RUNNING_PER_USER,
+      totalProfit: runs.reduce((n, r) => n.plus(r.profit), ZERO).toFixed(4),
+      runningProfit: running.reduce((n, r) => n.plus(r.profit), ZERO).toFixed(4),
+      pairs, markets, defaults,
+      // Kept for older dashboards: the ZIG/USDT defaults and price.
+      marketPrice: markets.ZIGUSDT ?? null, buyFirstDefaults: appDefaults('ZIGUSDT', 'BUY_FIRST'),
+    };
+  }
+
+  /** One of the user's simulations in full. Another user's id is reported as not found. */
+  async detail(userId: string, runId: string) {
+    const live = this.live.get(runId);
+    const run = live?.run ?? (await this.store.getRun(runId).catch(() => null));
+    if (!run || run.ownerId !== userId) throw new NotFoundException('No such simulation');
+    return this.describe(run, live);
   }
 
   /** Everything the dashboard shows about one series: its orders, fills, loops and totals. */
@@ -144,13 +211,16 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     const s = run.settings;
     return {
       id: run.id, label: seriesLabel(run.seriesNo), seriesNo: run.seriesNo, direction,
-      status: live ? snap!.status : 'STOPPED', statusReason: live ? snap!.statusReason ?? null : run.statusReason,
+      symbol: symbolOf(s), asset: assetOf(s),
+      status: live ? snap!.status : run.status === 'RUNNING' ? 'STARTING' : 'STOPPED',
+      statusReason: live ? snap!.statusReason ?? null : run.statusReason,
+      running: !!live,
       startedAt: new Date(started).toISOString(), stoppedAt: run.stoppedAt ? new Date(run.stoppedAt).toISOString() : null,
       dailyReset: s.dailyReset ? {
         resets: run.resets ?? 0,
         lastAt: run.lastResetAt ? new Date(run.lastResetAt).toISOString() : null,
         nextAt: live ? new Date(lastResetBoundary(Date.now()) + DAY_MS).toISOString() : null,
-        // What loops closed early by resets left behind: ZIG sold and not bought back (positive) or bought and not sold back (negative).
+        // What loops closed early by resets left behind: base sold and not bought back (positive) or bought and not sold back (negative).
         zigLeftOpen: (run.carriedBase ?? ZERO).neg().toFixed(),
         usdtLeftOpen: (run.carriedQuote ?? ZERO).toFixed(4),
       } : null,
@@ -189,8 +259,8 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
 
   // ── Plan, start, stop ────────────────────────────────────────────────────────────────────────
 
-  private async market() {
-    const [specs, price] = await Promise.all([bybitPublicSpecs(SYMBOL), bybitLastPrice(SYMBOL)]);
+  private async market(symbol: SeriesSymbol) {
+    const [specs, price] = await Promise.all([bybitPublicSpecs(symbol), bybitLastPrice(symbol)]);
     return { specs, price };
   }
 
@@ -204,7 +274,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   async preview(settings: SeriesSettings) {
-    const { specs, price } = await this.market();
+    const { specs, price } = await this.market(symbolOf(settings));
     const plan = this.plan(settings, price, specs);
     const buyFirst = plan.direction === 'BUY_FIRST';
     const one = new Decimal(1);
@@ -213,12 +283,13 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     const resellPct = new Decimal(settings.resellPct);
     // Where each order's loop closes: a buyback below a sell, or a sell-back above a buy.
     const closeAt = (p: Decimal) => (buyFirst ? resellPrice(p, resellPct, specs.tick) : buybackPrice(p, buybackPct, specs.tick));
-    // One loop on the first order, fees on both legs (Bybit takes the buy fee in ZIG).
+    // One loop on the first order, fees on both legs (Bybit takes the buy fee in the base asset).
     const first = plan.orders[0].price;
     const loopProfit = buyFirst
       ? roundDown(plan.qty.mul(one.minus(fee)), specs.lot).mul(closeAt(first)).mul(one.minus(fee)).minus(plan.qty.mul(first))
       : plan.qty.mul(first).mul(one.minus(fee)).minus(plan.qty.div(one.minus(fee)).mul(closeAt(first)));
     return {
+      symbol: symbolOf(settings), asset: assetOf(settings),
       direction: plan.direction,
       marketPrice: price.toFixed(),
       basePrice: plan.basePrice.toFixed(),
@@ -241,81 +312,89 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
 
   private async launch(userId: string, tag: string, run: SeriesRun, specs: VenueSpecs, price: Decimal,
     balances: { zig: Decimal; usdt: Decimal }, resume?: { slots: Slot[]; cycles: SeriesCycle[] }) {
+    const symbol = symbolOf(run.settings);
     const plan = buildPlan(run.settings, price, specs);
     // The plan's base and size are fixed when the series starts; a resume keeps them.
     const fixedPlan = { ...plan, basePrice: run.basePrice, qty: run.qty };
     const log = this.engineLog(tag);
+    // Each simulation has its own paper wallet: its own venue, balances and orders.
     const venue = new PaperVenue({
-      symbol: SYMBOL, specs, clock: systemClock, log, startPrice: price,
-      startBase: balances.zig, startQuote: balances.usdt, idPrefix: `p${Date.now().toString(36)}`,
+      symbol, specs, clock: systemClock, log, startPrice: price,
+      startBase: balances.zig, startQuote: balances.usdt, idPrefix: `p${Date.now().toString(36)}${run.seriesNo}`,
     });
     const engine = new SeriesEngine({
       run, plan: fixedPlan, specs, venue, store: this.store, lease: new PgLease(this.api.pool),
-      leaseScope: `${userId}/series-paper`, holder: this.holder, clock: systemClock, log, alert: this.quietAlerts(tag),
-      symbol: SYMBOL, feedStaleSeconds: 60, leaseTtlSeconds: LEASE_TTL_SECONDS, recheckDelayMs: 0,
+      leaseScope: this.leaseScope(userId, run.id), holder: this.holder, clock: systemClock, log, alert: this.quietAlerts(tag),
+      symbol, feedStaleSeconds: 60, leaseTtlSeconds: LEASE_TTL_SECONDS, recheckDelayMs: 0,
     });
     const runner = new SeriesRunner(engine, venue, log);
     await runner.start(resume);
     const status = engine.getStatus();
     if (status === 'STOPPED' || status === 'HALTED') {
-      throw new ConflictException(status === 'STOPPED' ? 'Another instance is running a series for this account.' : `The series halted at start: ${engine.snapshot().statusReason}`);
+      throw new ConflictException(status === 'STOPPED' ? 'Another instance is running this simulation.' : `The series halted at start: ${engine.snapshot().statusReason}`);
     }
     const s = run.settings;
     const watchdog = setInterval(() => {
       const snap = engine.snapshot();
       if (snap.status === 'HALTED' || snap.status === 'STOPPED') {
-        void this.forget(userId, engine);
+        void this.forget(run.id, engine);
       } else if (s.dailyReset && (run.lastResetAt ?? run.startedAt) < lastResetBoundary(Date.now())) {
-        void this.dailyReset(userId, tag);
+        void this.dailyReset(run.id, tag);
       } else if (s.maxCycles !== null && snap.cyclesCompleted >= s.maxCycles) {
-        void this.stop(userId, tag, `reached ${s.maxCycles} completed loops`);
+        void this.stop(userId, run.id, tag, `reached ${s.maxCycles} completed loops`);
       } else if (s.maxHours !== null && Date.now() - run.startedAt >= s.maxHours * 3_600_000) {
-        void this.stop(userId, tag, `ran for ${s.maxHours} hours`);
+        void this.stop(userId, run.id, tag, `ran for ${s.maxHours} hours`);
       }
     }, 10_000);
-    this.live.set(userId, { run, engine, runner, venue, specs, watchdog });
-    void runner.done.then(() => this.forget(userId, engine));
+    this.live.set(run.id, { ownerId: userId, run, engine, runner, venue, specs, watchdog });
+    void runner.done.then(() => this.forget(run.id, engine));
   }
 
   /**
-   * Moves the user's series to a new base: the close of the Bybit 1-minute candle that ended at the
-   * reset moment. Runs once per day; a reset missed while the backend was down runs when it is back.
+   * Moves a series to a new base: the close of the Bybit 1-minute candle that ended at the reset
+   * moment. Runs once per day; a reset missed while the backend was down runs when it is back.
    */
-  private async dailyReset(userId: string, tag: string) {
-    const l = this.live.get(userId);
-    if (!l || this.resetting.has(userId)) return;
-    this.resetting.add(userId);
+  private async dailyReset(runId: string, tag: string) {
+    const l = this.live.get(runId);
+    if (!l || this.resetting.has(runId)) return;
+    this.resetting.add(runId);
     try {
       const boundary = lastResetBoundary(Date.now());
-      const price = await bybitCloseAt(SYMBOL, boundary);
+      const price = await bybitCloseAt(symbolOf(l.run.settings), boundary);
       const summary = await l.engine.rebase(price, Date.now());
-      if (summary) this.logger.log(`[${tag}] daily reset: base ${summary.from} -> ${summary.to}, ${summary.orders} orders, ${summary.loopsClosedEarly} open loops closed`);
+      if (summary) this.logger.log(`[${tag}] ${symbolOf(l.run.settings)} series ${seriesLabel(l.run.seriesNo)} daily reset: base ${summary.from} -> ${summary.to}, ${summary.orders} orders, ${summary.loopsClosedEarly} open loops closed`);
     } catch (e) {
       this.logger.error(`[${tag}] daily reset failed, retrying shortly: ${(e as Error).message}`);
     } finally {
-      this.resetting.delete(userId);
+      this.resetting.delete(runId);
     }
   }
 
   /** Drops a series that ended by itself (halted, or lease lost). Its records stay in the database. */
-  private async forget(userId: string, engine: SeriesEngine) {
-    const l = this.live.get(userId);
+  private async forget(runId: string, engine: SeriesEngine) {
+    const l = this.live.get(runId);
     if (!l || l.engine !== engine) return;
     clearInterval(l.watchdog);
-    this.live.delete(userId);
+    this.live.delete(runId);
     await l.runner.stop(engine.snapshot().statusReason ?? 'ended').catch(() => undefined);
   }
 
+  /** Starts a new simulation next to any already running (up to MAX_RUNNING_PER_USER). */
   async start(userId: string, email: string, settings: SeriesSettings) {
-    if (this.live.has(userId) || this.busy.has(userId)) throw new ConflictException('A series is already running. Stop it first.');
-    this.busy.add(userId);
+    const busy = (this.starting.get(userId) ?? 0);
+    if (this.runningFor(userId).length + busy >= MAX_RUNNING_PER_USER) {
+      throw new ConflictException(`You can run up to ${MAX_RUNNING_PER_USER} simulations at once. Stop one first.`);
+    }
+    this.starting.set(userId, busy + 1);
     try {
-      const { specs, price } = await this.market();
+      const symbol = symbolOf(settings);
+      const { specs, price } = await this.market(symbol);
       const plan = this.plan(settings, price, specs);
       const zig = new Decimal(settings.totalZig);
       const usdt = new Decimal(settings.startUsdt);
       const run = await this.store.createRun({
-        ownerId: userId, mode: 'paper', settings, basePrice: plan.basePrice, qty: plan.qty, startZig: zig, startUsdt: usdt, startedAt: Date.now(),
+        ownerId: userId, mode: 'paper', settings: { ...settings, symbol }, basePrice: plan.basePrice, qty: plan.qty,
+        startZig: zig, startUsdt: usdt, startedAt: Date.now(),
       });
       try {
         await this.launch(userId, email, run, specs, price, { zig, usdt });
@@ -323,25 +402,28 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
         await this.store.stopRun(run.id, `could not start: ${(e as Error).message}`);
         throw e;
       }
-      this.logger.log(`[${email}] series ${seriesLabel(run.seriesNo)} started at base ${plan.basePrice.toFixed()}`);
-      return this.overview(userId);
+      this.logger.log(`[${email}] ${symbol} series ${seriesLabel(run.seriesNo)} started at base ${plan.basePrice.toFixed()}`);
+      return { id: run.id, ...(await this.overview(userId)) };
     } finally {
-      this.busy.delete(userId);
+      const n = (this.starting.get(userId) ?? 1) - 1;
+      if (n > 0) this.starting.set(userId, n); else this.starting.delete(userId);
     }
   }
 
-  /** Cancels every order of the user's series and ends it. Profit stays recorded. */
-  async stop(userId: string, email: string, reason = 'stopped by user') {
-    const l = this.live.get(userId);
+  /** Cancels every order of one of the user's simulations and ends it. Profit stays recorded. */
+  async stop(userId: string, runId: string, email: string, reason = 'stopped by user') {
+    const l = this.live.get(runId);
     if (l) {
+      if (l.ownerId !== userId) throw new NotFoundException('No such simulation');
       clearInterval(l.watchdog);
-      this.live.delete(userId);
+      this.live.delete(runId);
       await l.runner.stop(reason);
-      this.logger.log(`[${email}] series ${seriesLabel(l.run.seriesNo)} stopped: ${reason}`);
+      this.logger.log(`[${email}] ${symbolOf(l.run.settings)} series ${seriesLabel(l.run.seriesNo)} stopped: ${reason}`);
     } else {
-      // Nothing in memory (e.g. it halted): make sure the record is closed too.
-      const latest = await this.store.latestRun(userId, 'paper');
-      if (latest?.status === 'RUNNING') await this.store.stopRun(latest.id, reason);
+      // Nothing in memory (it halted, or is still being resumed): make sure the record is closed too.
+      const run = await this.store.getRun(runId).catch(() => null);
+      if (!run || run.ownerId !== userId) throw new NotFoundException('No such simulation');
+      if (run.status === 'RUNNING') await this.store.stopRun(run.id, reason);
     }
     return this.overview(userId);
   }
@@ -363,23 +445,29 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
 
   private async resume(run: SeriesRun, attempt: number): Promise<void> {
     const tag = `${run.ownerId.slice(0, 8)}`;
-    if (this.live.has(run.ownerId)) return;
+    if (this.live.has(run.id)) return;
+    // Stopped by the user while waiting to resume: nothing to do.
+    const current = await this.store.getRun(run.id).catch(() => null);
+    if (current && current.status !== 'RUNNING') return;
     // Wait until the previous process's lease has expired, so the start below does not lose the race.
     const lease = (await this.api.pool.query(
-      'SELECT holder, expires_at > now() AS held FROM engine_leases WHERE pair_id=$1', [`${run.ownerId}/series-paper`],
-    ).catch(() => ({ rows: [] as any[] }))).rows[0];
-    if (lease?.held && lease.holder !== this.holder) {
+      'SELECT holder, expires_at > now() AS held FROM engine_leases WHERE pair_id = ANY($1)',
+      [[this.leaseScope(run.ownerId, run.id), `${run.ownerId}/series-paper`]],
+    ).catch(() => ({ rows: [] as any[] }))).rows.find((r: any) => r.held && r.holder !== this.holder);
+    if (lease) {
       setTimeout(() => void this.resume(run, attempt), (LEASE_TTL_SECONDS + 2) * 1000).unref();
       return;
     }
     try {
-      const [{ specs, price }, slots, cycles] = await Promise.all([this.market(), this.store.loadSlots(run.id), this.store.listCycles(run.id)]);
-      // Rebuild the simulated balances from the records: what was sold and not bought back is USDT.
+      const [{ specs, price }, slots, cycles] = await Promise.all([
+        this.market(symbolOf(run.settings)), this.store.loadSlots(run.id), this.store.listCycles(run.id),
+      ]);
+      // Rebuild the simulated wallet from the records: what was sold and not bought back is USDT.
       const residual = cycles.reduce((n, c) => n.plus(c.boughtNet).minus(c.soldQty), ZERO);
       const zig = run.startZig.plus(residual).plus(run.carriedBase ?? ZERO).minus(slots.reduce((n, s) => n.plus(owed(s)), ZERO));
       const usdt = run.startUsdt.plus(run.carriedQuote ?? ZERO).plus(slots.reduce((n, s) => n.plus(reserveOf(s)), ZERO)).plus(cycles.reduce((n, c) => n.plus(c.profit), ZERO));
       await this.launch(run.ownerId, tag, run, specs, price, { zig, usdt }, { slots, cycles });
-      this.logger.log(`[${tag}] resumed series ${seriesLabel(run.seriesNo)} (${cycles.length} loops so far)`);
+      this.logger.log(`[${tag}] resumed ${symbolOf(run.settings)} series ${seriesLabel(run.seriesNo)} (${cycles.length} loops so far)`);
     } catch (e) {
       // The previous process's lease may still be live for a few seconds: try again shortly.
       if (attempt < 6) {
@@ -392,8 +480,8 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   /**
-   * On shutdown the timers stop but the series stays RUNNING in the database, so the next start
-   * resumes it. Paper orders only exist in this process, so there is nothing to cancel elsewhere.
+   * On shutdown the timers stop but the series stay RUNNING in the database, so the next start
+   * resumes them. Paper orders only exist in this process, so there is nothing to cancel elsewhere.
    */
   async onModuleDestroy() {
     for (const l of this.live.values()) {

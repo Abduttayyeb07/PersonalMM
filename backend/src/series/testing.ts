@@ -10,6 +10,11 @@ import { SeriesSettings } from './types';
 
 export { BYBIT_ZIG_SPECS, FakeClock };
 
+/** Bybit BTCUSDT spot rules: price steps of 0.1, quantity steps of 0.000001 BTC, 5 USDT minimum. */
+export const BYBIT_BTC_SPECS: VenueSpecs = {
+  ...BYBIT_ZIG_SPECS, tick: new Decimal('0.1'), lot: new Decimal('0.000001'), minOrderValue: new Decimal(5),
+};
+
 export interface SeriesRig {
   engine: SeriesEngine;
   sim: SimVenue;
@@ -28,6 +33,7 @@ export async function seriesRig(o: {
   sim?: Partial<SimOptions>;
   startUsdt?: Decimal.Value;
   feedStaleSeconds?: number;
+  symbol?: string;
 }): Promise<SeriesRig> {
   const specs = o.specs ?? BYBIT_ZIG_SPECS;
   const settings: SeriesSettings = { ...defaultSeriesSettings(), ...o.settings };
@@ -46,7 +52,7 @@ export async function seriesRig(o: {
   });
   const engine = new SeriesEngine({
     run, plan, specs, venue: sim, store, lease: new MemoryLease(clock), leaseScope: 'user-a/paper', holder: 'test', clock,
-    log: silentLogger, alert: alerts as Alerter, symbol: 'ZIGUSDT', feedStaleSeconds: o.feedStaleSeconds ?? 60, leaseTtlSeconds: 15,
+    log: silentLogger, alert: alerts as Alerter, symbol: o.symbol ?? 'ZIGUSDT', feedStaleSeconds: o.feedStaleSeconds ?? 60, leaseTtlSeconds: 15,
   });
   await sim.start({
     onBook: (b) => engine.onBook(b), onFill: (f) => engine.onFill(f),

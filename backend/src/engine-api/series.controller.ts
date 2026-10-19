@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Req, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsNumber, IsNumberString, IsOptional, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
@@ -6,6 +6,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SeriesService } from './series.service';
 
 class SeriesSettingsDto {
+  @IsOptional() @IsIn(['ZIGUSDT', 'BTCUSDT']) symbol?: 'ZIGUSDT' | 'BTCUSDT';
   @IsOptional() @IsIn(['SELL_FIRST', 'BUY_FIRST']) direction?: 'SELL_FIRST' | 'BUY_FIRST';
   @IsOptional() @IsBoolean() dailyReset?: boolean;
   @IsNumberString() @MaxLength(20) totalZig!: string;
@@ -49,10 +50,16 @@ export class SeriesController {
     return this.series.start(req.user.id, req.user.email, dto.settings);
   }
 
-  /** Stopping is always allowed: every order of the series is cancelled. */
-  @Post('stop')
+  /** One of the user's simulations in full. */
+  @Get(':id')
+  detail(@Req() req: any, @Param('id', ParseUUIDPipe) id: string) {
+    return this.series.detail(req.user.id, id);
+  }
+
+  /** Stopping is always allowed: every order of that simulation is cancelled. Others keep running. */
+  @Post(':id/stop')
   @HttpCode(200)
-  stop(@Req() req: any) {
-    return this.series.stop(req.user.id, req.user.email);
+  stop(@Req() req: any, @Param('id', ParseUUIDPipe) id: string) {
+    return this.series.stop(req.user.id, id, req.user.email);
   }
 }

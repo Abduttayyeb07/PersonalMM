@@ -1,7 +1,7 @@
 import Decimal from 'decimal.js';
 import { roundDown, roundUp } from '../engine/lattice';
 import { VenueSpecs } from '../engine/types';
-import { SeriesPlan, SeriesSettings, directionOf } from './types';
+import { SeriesPlan, SeriesSettings, assetOf, directionOf, isSeriesSymbol } from './types';
 
 export class SeriesSettingsError extends Error {}
 
@@ -55,9 +55,11 @@ export function buildPlan(s: SeriesSettings, marketPrice: Decimal, specs: VenueS
   const direction = directionOf(s);
   if (direction !== 'SELL_FIRST' && direction !== 'BUY_FIRST') throw new SeriesSettingsError('Direction must be sell first or buy first');
   const buyFirst = direction === 'BUY_FIRST';
-  const totalZig = dec(s.totalZig, 'Total ZIG');
+  if (s.symbol !== undefined && !isSeriesSymbol(s.symbol)) throw new SeriesSettingsError('Pair must be ZIG/USDT or BTC/USDT');
+  const asset = assetOf(s);
+  const totalZig = dec(s.totalZig, `Total ${asset}`);
   const startUsdt = dec(s.startUsdt, 'Starting USDT');
-  const sharePct = dec(s.sellPct, buyFirst ? 'Share of USDT used' : 'Share of ZIG for sale');
+  const sharePct = dec(s.sellPct, buyFirst ? 'Share of USDT used' : `Share of ${asset} for sale`);
   const first = dec(s.firstSellPct, buyFirst ? 'First buy below base' : 'First sell above base');
   const step = dec(s.stepPct, buyFirst ? 'Step between buys' : 'Step between sells');
   const buyback = dec(s.buybackPct, buyFirst ? 'Re-buy below sell-back' : 'Buyback below sell');
@@ -65,13 +67,13 @@ export function buildPlan(s: SeriesSettings, marketPrice: Decimal, specs: VenueS
   const base = s.basePrice === null || s.basePrice === '' ? marketPrice : dec(s.basePrice, 'Base price');
 
   if (buyFirst) {
-    if (totalZig.isNegative() || totalZig.gt(1e9)) throw new SeriesSettingsError('Total ZIG must be between 0 and 1,000,000,000');
+    if (totalZig.isNegative() || totalZig.gt(1e9)) throw new SeriesSettingsError(`Total ${asset} must be between 0 and 1,000,000,000`);
     if (startUsdt.lt(1) || startUsdt.gt(1e8)) throw new SeriesSettingsError('USDT to buy with must be between 1 and 100,000,000');
   } else {
-    if (totalZig.lt(1) || totalZig.gt(1e9)) throw new SeriesSettingsError('Total ZIG must be between 1 and 1,000,000,000');
+    if (totalZig.lte(0) || totalZig.gt(1e9)) throw new SeriesSettingsError(`Total ${asset} must be above 0 and at most 1,000,000,000`);
     if (startUsdt.isNegative() || startUsdt.gt(1e8)) throw new SeriesSettingsError('Starting USDT must be between 0 and 100,000,000');
   }
-  if (sharePct.lte(0) || sharePct.gt(100)) throw new SeriesSettingsError(`Share of ${buyFirst ? 'USDT used' : 'ZIG for sale'} must be above 0% and at most 100%`);
+  if (sharePct.lte(0) || sharePct.gt(100)) throw new SeriesSettingsError(`Share of ${buyFirst ? 'USDT used' : `${asset} for sale`} must be above 0% and at most 100%`);
   if (!Number.isInteger(s.orders) || s.orders < 1 || s.orders > 50) throw new SeriesSettingsError('Number of orders must be a whole number from 1 to 50');
   if (first.lt(0) || first.gt(50)) throw new SeriesSettingsError(`First ${buyFirst ? 'buy must be 0% to 50% below' : 'sell must be 0% to 50% above'} the base`);
   if (step.lt('0.1') || step.gt(20)) throw new SeriesSettingsError(`Step between ${buyFirst ? 'buys' : 'sells'} must be 0.1% to 20%`);
@@ -112,7 +114,7 @@ export function buildPlan(s: SeriesSettings, marketPrice: Decimal, specs: VenueS
   } else {
     qty = roundDown(totalZig.mul(sharePct).div(100).div(s.orders), specs.lot);
   }
-  if (qty.lt(specs.lot)) throw new SeriesSettingsError(`Each order would be below the exchange minimum size. Use more ${buyFirst ? 'USDT' : 'ZIG'}, a larger share, or fewer orders.`);
+  if (qty.lt(specs.lot)) throw new SeriesSettingsError(`Each order would be below the exchange minimum size. Use more ${buyFirst ? 'USDT' : asset}, a larger share, or fewer orders.`);
 
   // The smallest order in the loop must still clear the exchange minimum.
   const smallest = buyFirst
@@ -124,12 +126,12 @@ export function buildPlan(s: SeriesSettings, marketPrice: Decimal, specs: VenueS
       : specs.minOrderValue.div(buybackPrice(prices[0], buyback, specs.tick)).mul(s.orders).div(sharePct.div(100));
     throw new SeriesSettingsError(
       `Each order is worth ${smallest.toFixed(2)} USDT, below the exchange minimum of ${specs.minOrderValue} USDT. ` +
-      `With ${s.orders} orders and ${sharePct.toFixed()}% used you need about ${need.toDecimalPlaces(0, Decimal.ROUND_UP).toFixed()} ${buyFirst ? 'USDT' : 'ZIG'}, or use fewer orders or a larger share.`,
+      `With ${s.orders} orders and ${sharePct.toFixed()}% used you need about ${(buyFirst || need.gte(1) ? need.toDecimalPlaces(0, Decimal.ROUND_UP) : roundUp(need, specs.lot)).toFixed()} ${buyFirst ? 'USDT' : asset}, or use fewer orders or a larger share.`,
     );
   }
   const usdtForBuys = buyFirst ? prices.reduce((n, p) => n.plus(p.mul(qty)), new Decimal(0)) : new Decimal(0);
   const zigForSale = buyFirst ? new Decimal(0) : qty.mul(s.orders);
-  if (zigForSale.gt(totalZig)) throw new SeriesSettingsError('The orders would sell more ZIG than you hold');
+  if (zigForSale.gt(totalZig)) throw new SeriesSettingsError(`The orders would sell more ${asset} than you hold`);
   if (usdtForBuys.gt(startUsdt)) throw new SeriesSettingsError('The orders would spend more USDT than you hold');
   return { direction, basePrice: base, qty, zigForSale, usdtForBuys, orders };
 }

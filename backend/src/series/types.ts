@@ -8,11 +8,24 @@ import { LiveOrder } from '../engine/rung-accounting';
  */
 export type SeriesDirection = 'SELL_FIRST' | 'BUY_FIRST';
 
+/** Bybit spot pairs a series can trade, all quoted in USDT. */
+export const SERIES_PAIRS = {
+  ZIGUSDT: { asset: 'ZIG' },
+  BTCUSDT: { asset: 'BTC' },
+} as const;
+export type SeriesSymbol = keyof typeof SERIES_PAIRS;
+export const isSeriesSymbol = (s: unknown): s is SeriesSymbol => typeof s === 'string' && s in SERIES_PAIRS;
+
 /** What a user chooses when starting a series. Numbers travel as strings to stay exact. */
 export interface SeriesSettings {
+  /** The Bybit spot pair. Missing on series stored before BTC existed: ZIGUSDT. */
+  symbol?: SeriesSymbol;
   /** Which side opens each loop. Missing on series stored before buy-first existed: SELL_FIRST. */
   direction?: SeriesDirection;
-  /** All the base asset (ZIG) the simulated or real account holds. Funds the sells when selling first. */
+  /**
+   * All the base asset (ZIG, or BTC on BTCUSDT) this simulation's wallet holds. Funds the sells when
+   * selling first. (The name predates BTC; it is the base asset of whichever pair is chosen.)
+   */
   totalZig: string;
   /** USDT the account holds. Funds the buys when buying first. */
   startUsdt: string;
@@ -41,6 +54,9 @@ export interface SeriesSettings {
 }
 
 export const directionOf = (s: Pick<SeriesSettings, 'direction'>): SeriesDirection => s.direction ?? 'SELL_FIRST';
+export const symbolOf = (s: Pick<SeriesSettings, 'symbol'>): SeriesSymbol => s.symbol ?? 'ZIGUSDT';
+/** The base asset's name for messages: ZIG, BTC. */
+export const assetOf = (s: Pick<SeriesSettings, 'symbol'>): string => SERIES_PAIRS[symbolOf(s)]?.asset ?? 'ZIG';
 
 export type SlotState = 'SELL_LIVE' | 'BUY_LIVE';
 

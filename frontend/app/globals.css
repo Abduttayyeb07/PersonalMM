@@ -225,6 +225,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .s-toggle input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--gold); flex: 0 0 18px; }
 .s-toggle:has(input:checked) { border-color: var(--gold); background: var(--gold-wash); }
 
+/* Simulation tabs: one per running simulation, a New tab, and the running total. */
+.s-runs { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; margin-bottom: 26px; }
+.s-run {
+  display: grid; gap: 4px; min-width: 168px; padding: 10px 14px; border-radius: 10px; text-align: left;
+  background: var(--panel); border: 1px solid var(--line); color: var(--ink-2); font-size: 13px;
+}
+.s-run:hover { border-color: #3c526d; }
+.s-run[aria-selected='true'] { border-color: var(--gold); background: var(--gold-wash); }
+.s-run-top { display: flex; align-items: center; gap: 7px; color: var(--ink); }
+.s-run-top i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.s-run-top b { font-weight: 700; }
+.s-run-sub { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+.s-run-new { border-style: dashed; }
+.s-run-new .s-run-top b { color: var(--gold); }
+.s-runs-total { margin-left: auto; display: grid; gap: 2px; text-align: right; align-content: center; font-size: 12px; color: var(--muted); }
+.s-runs-total b { font-size: 16px; color: var(--ink); font-weight: 600; }
+@media (max-width: 720px) { .s-runs-total { margin-left: 0; text-align: left; width: 100%; } .s-run { min-width: 0; flex: 1 1 140px; } }
+
 @media (max-width: 1180px) {
   .c-header-context { display: none; }
   .c-header-right { margin-left: auto; }

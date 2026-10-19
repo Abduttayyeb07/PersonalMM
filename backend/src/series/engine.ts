@@ -7,7 +7,7 @@ import { applySeriesFill, cloneSlot, newSlot, owed, remaining, reserveOf } from 
 import { buildSeriesOrderId, parseSeriesOrderId } from './order-id';
 import { buildPlan } from './plan';
 import { SeriesStore } from './store';
-import { Slot, SeriesCycle, SeriesPlan, SeriesRun, directionOf } from './types';
+import { Slot, SeriesCycle, SeriesPlan, SeriesRun, assetOf, directionOf } from './types';
 
 const ZERO = new Decimal(0);
 
@@ -134,7 +134,7 @@ export class SeriesEngine {
       const buyFirst = this.d.plan.direction === 'BUY_FIRST';
       const needed = buyFirst ? this.d.plan.usdtForBuys : this.d.plan.zigForSale;
       const held = buyFirst ? balances.quote : balances.base;
-      const asset = buyFirst ? 'USDT' : 'ZIG';
+      const asset = buyFirst ? 'USDT' : assetOf(this.d.run.settings);
       if (!resume && held.lt(needed)) {
         this.status = 'STOPPED';
         this.statusReason = `not enough ${asset}: hold ${held.toFixed()}, orders need ${needed.toFixed()}`;
@@ -408,7 +408,7 @@ export class SeriesEngine {
     if ((side === 'SELL' ? balances.base : balances.quote).lt(committed)) {
       // The venue's balance may already include a fill we have not processed yet: catch up first.
       if ((await this.syncMissedFills()) > 0) return;
-      return this.halt(`not enough ${side === 'SELL' ? 'ZIG' : 'USDT'} for ${side} on slot ${slot.slot}: need ${committed.toFixed(4)}, hold ${(side === 'SELL' ? balances.base : balances.quote).toFixed(4)}`);
+      return this.halt(`not enough ${side === 'SELL' ? assetOf(this.d.run.settings) : 'USDT'} for ${side} on slot ${slot.slot}: need ${committed.toFixed(4)}, hold ${(side === 'SELL' ? balances.base : balances.quote).toFixed(4)}`);
     }
 
     // Record the intent BEFORE sending, under a never-used ID.
@@ -516,7 +516,7 @@ export class SeriesEngine {
     const residual = this.cycles.reduce((n, c) => n.plus(c.boughtNet).minus(c.soldQty), ZERO);
     const expectedBase = run.startZig.plus(residual).plus(run.carriedBase ?? ZERO).minus(slots.reduce((n, s) => n.plus(owed(s)), ZERO));
     const baseTol = specs.lot.mul(this.cycles.length + 2);
-    if (balances.base.minus(expectedBase).abs().gt(baseTol)) out.push(`ZIG: hold ${balances.base.toFixed()}, records say ${expectedBase.toFixed()}`);
+    if (balances.base.minus(expectedBase).abs().gt(baseTol)) out.push(`${assetOf(run.settings)}: hold ${balances.base.toFixed()}, records say ${expectedBase.toFixed()}`);
     // Quote: start + reserve behind open buybacks + profit.
     const expectedQuote = run.startUsdt.plus(run.carriedQuote ?? ZERO).plus(slots.reduce((n, s) => n.plus(reserveOf(s)), ZERO)).plus(this.profit());
     if (balances.quote.minus(expectedQuote).abs().gt('0.05')) out.push(`USDT: hold ${balances.quote.toFixed(4)}, records say ${expectedQuote.toFixed(4)}`);

@@ -448,3 +448,35 @@ describe('daily reset time', () => {
     expect(new Date(lastResetBoundary(Date.parse('2026-10-18T03:00:00Z'))).toISOString()).toBe('2026-10-17T19:00:00.000Z');
   });
 });
+
+describe('BTC/USDT: same rules as ZIG', () => {
+  it('builds the BTC ladder with BTC precision: +3% then +1%, equal BTC per order', async () => {
+    const { BYBIT_BTC_SPECS } = await import('./testing');
+    const plan = buildPlan({ ...defaultSeriesSettings(), symbol: 'BTCUSDT', totalZig: '0.1', sellPct: '100', basePrice: '80000' }, D('80000'), BYBIT_BTC_SPECS);
+    expect(plan.qty.toFixed()).toBe('0.006666'); // 0.1 / 15, down to 0.000001 BTC
+    expect(plan.orders.slice(0, 3).map((o) => o.price.toFixed())).toEqual(['82400', '83224', '84056.2']);
+    expect(() => buildPlan({ ...defaultSeriesSettings(), symbol: 'BTCUSDT', totalZig: '0.0005', sellPct: '100', basePrice: '80000' }, D('80000'), BYBIT_BTC_SPECS))
+      .toThrow(/BTC/);
+  });
+
+  it('runs the full loop on BTC: sells fill, buybacks 3% below, profit in USDT, balances reconcile', async () => {
+    const { BYBIT_BTC_SPECS } = await import('./testing');
+    const r = await seriesRig({
+      symbol: 'BTCUSDT', specs: BYBIT_BTC_SPECS, startPrice: '80000',
+      settings: { symbol: 'BTCUSDT', totalZig: '0.1', sellPct: '100', basePrice: '80000' },
+    });
+    await r.engine.start();
+    await r.sim.drain();
+    expect(await r.sim.getOpenOrders()).toHaveLength(15);
+    expect((await r.sim.getOpenOrders()).every((o) => o.clientOrderId.startsWith('BTCUSDT-'))).toBe(true);
+    await r.step('86000'); // the lower sells fill
+    const buys = (await r.sim.getOpenOrders()).filter((o) => o.side === 'BUY').sort((a, b) => a.price.comparedTo(b.price));
+    expect(buys[0].price.toFixed()).toBe('79928'); // 82400 x 0.97, rounded down to 0.1
+    await r.step('79000'); // every buyback fills
+    expect(r.engine.getCycles().length).toBeGreaterThan(3);
+    expect(r.engine.getCycles().every((c) => c.profit.gt(0))).toBe(true);
+    await r.engine.checkNow();
+    expect(r.engine.snapshot().breaches).toEqual([]);
+    expect(await r.sim.getOpenOrders()).toHaveLength(15);
+  });
+});
