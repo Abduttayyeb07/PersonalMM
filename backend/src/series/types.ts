@@ -17,14 +17,26 @@ export const SERIES_PAIRS = {
   UNIUSDT: { asset: 'UNI' },
   ONDOUSDT: { asset: 'ONDO' },
   CAKEUSDT: { asset: 'CAKE' },
+  TAOUSDT: { asset: 'TAO' },
 } as const;
 export type SeriesSymbol = keyof typeof SERIES_PAIRS;
 export const isSeriesSymbol = (s: unknown): s is SeriesSymbol => typeof s === 'string' && s in SERIES_PAIRS;
 
+/** Exchange whose live prices a simulation follows (and, for real trading, where it would trade). */
+export type SeriesVenue = 'BYBIT' | 'MEXC';
+/** Pairs each exchange lists. TAO is MEXC-only: Bybit spot does not list it. */
+export const VENUE_PAIRS: Record<SeriesVenue, SeriesSymbol[]> = {
+  BYBIT: ['ZIGUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'UNIUSDT', 'ONDOUSDT', 'CAKEUSDT'],
+  MEXC: ['ZIGUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'UNIUSDT', 'ONDOUSDT', 'CAKEUSDT', 'TAOUSDT'],
+};
+export const isSeriesVenue = (v: unknown): v is SeriesVenue => v === 'BYBIT' || v === 'MEXC';
+
 /** What a user chooses when starting a series. Numbers travel as strings to stay exact. */
 export interface SeriesSettings {
-  /** The Bybit spot pair. Missing on series stored before BTC existed: ZIGUSDT. */
+  /** The spot pair. Missing on series stored before BTC existed: ZIGUSDT. */
   symbol?: SeriesSymbol;
+  /** The exchange. Missing on series stored before MEXC existed: BYBIT. */
+  venue?: SeriesVenue;
   /** Which side opens each loop. Missing on series stored before buy-first existed: SELL_FIRST. */
   direction?: SeriesDirection;
   /**
@@ -53,6 +65,12 @@ export interface SeriesSettings {
    * every order is cancelled (open loops included) and a fresh ladder is placed. Same series.
    */
   dailyReset?: boolean;
+  /**
+   * Exact opening-order prices, set when a simulation is copied from another exchange so the copy
+   * places the same orders. Each is rounded to this exchange's tick away from the base (a sell never
+   * lower, a buy never higher). The daily reset drops it and builds the ladder from the new base.
+   */
+  ladder?: string[];
   /** Optional automatic stop. */
   maxCycles: number | null;
   maxHours: number | null;
@@ -60,6 +78,7 @@ export interface SeriesSettings {
 
 export const directionOf = (s: Pick<SeriesSettings, 'direction'>): SeriesDirection => s.direction ?? 'SELL_FIRST';
 export const symbolOf = (s: Pick<SeriesSettings, 'symbol'>): SeriesSymbol => s.symbol ?? 'ZIGUSDT';
+export const venueOf = (s: Pick<SeriesSettings, 'venue'>): SeriesVenue => s.venue ?? 'BYBIT';
 /** The base asset's name for messages: ZIG, BTC. */
 export const assetOf = (s: Pick<SeriesSettings, 'symbol'>): string => SERIES_PAIRS[symbolOf(s)]?.asset ?? 'ZIG';
 

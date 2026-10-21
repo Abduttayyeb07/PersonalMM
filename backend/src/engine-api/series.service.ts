@@ -3,7 +3,7 @@ import Decimal from 'decimal.js';
 import { hostname } from 'os';
 import { PgLease } from '../engine/supervisor/lease';
 import { Alerter, Logger as EngineLogger, VenueSpecs, systemClock } from '../engine/types';
-import { bybitCloseAt, bybitLastPrice, bybitPublicSpecs } from '../engine/venue/bybit-public';
+import { marketCloseAt, marketLastPrice, marketSpecs } from '../engine/venue/markets';
 import { PaperVenue } from '../engine/venue/paper-venue';
 import { owed, reserveOf } from '../series/accounting';
 import { SeriesEngine } from '../series/engine';
@@ -13,7 +13,8 @@ import { roundDown } from '../engine/lattice';
 import { SeriesSettingsError, buildPlan, buybackPrice, defaultSeriesSettings, resellPrice } from '../series/plan';
 import { SeriesRunner } from '../series/runner';
 import {
-  SERIES_PAIRS, SeriesCycle, SeriesDirection, SeriesRun, SeriesSettings, SeriesSymbol, Slot, assetOf, directionOf, orderKind, seriesLabel, symbolOf,
+  SERIES_PAIRS, SeriesCycle, SeriesDirection, SeriesRun, SeriesSettings, SeriesSymbol, SeriesVenue, Slot, VENUE_PAIRS, assetOf, directionOf,
+  isSeriesVenue, orderKind, seriesLabel, symbolOf, venueOf,
 } from '../series/types';
 import { EngineApiService } from './engine-api.service';
 
@@ -22,7 +23,7 @@ const LEASE_TTL_SECONDS = 30;
 const DAY_MS = 86_400_000;
 /** Daily reset time: 00:00 in Pakistan (UTC+5, no daylight saving) is 19:00 UTC. */
 const RESET_UTC_OFFSET_MS = 19 * 3_600_000;
-/** Simulations one user can run at the same time. */
+/** Simulations one user can run at the same time, per exchange (20 on Bybit and 20 on MEXC). */
 export const MAX_RUNNING_PER_USER = 20;
 
 /** The most recent daily reset moment at or before `now`. */
@@ -58,9 +59,10 @@ export const RECOMMENDED_RATES: Record<SeriesSymbol, Record<SeriesDirection, { f
   UNIUSDT: { SELL_FIRST: { first: '2', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
   ONDOUSDT: { SELL_FIRST: { first: '3', step: '1', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
   CAKEUSDT: { SELL_FIRST: { first: '0.5', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
+  TAOUSDT: { SELL_FIRST: { first: '0.5', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
 };
 
-export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesDirection = 'SELL_FIRST'): SeriesSettings {
+export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesDirection = 'SELL_FIRST', venue: SeriesVenue = 'BYBIT'): SeriesSettings {
   const amounts: Record<SeriesSymbol, { base: string; usdt: string }> = {
     ZIGUSDT: { base: '15000', usdt: '900' },
     BTCUSDT: { base: '0.1', usdt: '8000' },
@@ -70,11 +72,12 @@ export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesD
     UNIUSDT: { base: '118', usdt: '900' },
     ONDOUSDT: { base: '1930', usdt: '900' },
     CAKEUSDT: { base: '400', usdt: '900' },
+    TAOUSDT: { base: '3.2', usdt: '900' },
   };
   const a = amounts[symbol];
   const r = RECOMMENDED_RATES[symbol][direction];
   return {
-    ...defaultSeriesSettings(), symbol, direction, sellPct: '100', dailyReset: false,
+    ...defaultSeriesSettings(), symbol, venue, direction, sellPct: '100', dailyReset: false,
     firstSellPct: r.first, stepPct: r.step, buybackPct: r.loop, resellPct: r.loop,
     totalZig: direction === 'BUY_FIRST' ? '0' : a.base,
     startUsdt: direction === 'BUY_FIRST' ? a.usdt : '0',
@@ -87,7 +90,7 @@ export const appBuyFirstDefaults = () => appDefaults('ZIGUSDT', 'BUY_FIRST');
 
 /**
  * Series paper runs: the exact series engine on live Bybit prices, with simulated fills and balances.
- * A user can run several at once (up to MAX_RUNNING_PER_USER), on ZIG/USDT or BTC/USDT, each with its
+ * A user can run several at once (up to MAX_RUNNING_PER_USER), on Bybit or MEXC pairs, each with its
  * own paper wallet, orders and lock. A user only ever sees and controls their own. A series still
  * running when the backend stops is resumed when it starts again.
  */
@@ -98,7 +101,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly live = new Map<string, Live>();
   private readonly starting = new Map<string, number>();
   private readonly resetting = new Set<string>();
-  private readonly priceCache = new Map<SeriesSymbol, { at: number; price: string | null }>();
+  private readonly priceCache = new Map<string, { at: number; price: string | null }>();
   readonly store: PgSeriesStore;
   private readonly holder = `app:${hostname()}`;
 
@@ -121,20 +124,22 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     return `${userId}/series-paper/${runId}`;
   }
 
-  private runningFor(userId: string) {
-    return [...this.live.values()].filter((l) => l.ownerId === userId);
+  private runningFor(userId: string, venue: SeriesVenue) {
+    return [...this.live.values()].filter((l) => l.ownerId === userId && venueOf(l.run.settings) === venue);
   }
 
-  /** Last prices of every pair, cached for a few seconds (the dashboard polls). */
+  /** Last prices of every pair on every exchange ("BYBIT:ZIGUSDT"), cached for a few seconds (the dashboard polls). */
   private async marketPrices(): Promise<Record<string, string | null>> {
     const out: Record<string, string | null> = {};
-    await Promise.all((Object.keys(SERIES_PAIRS) as SeriesSymbol[]).map(async (sym) => {
-      const hit = this.priceCache.get(sym);
-      if (hit && Date.now() - hit.at < 3000) { out[sym] = hit.price; return; }
+    const keys = (Object.keys(VENUE_PAIRS) as SeriesVenue[]).flatMap((v) => VENUE_PAIRS[v].map((sym) => [v, sym] as const));
+    await Promise.all(keys.map(async ([v, sym]) => {
+      const key = `${v}:${sym}`;
+      const hit = this.priceCache.get(key);
+      if (hit && Date.now() - hit.at < 3000) { out[key] = hit.price; return; }
       let price: string | null = null;
-      try { price = (await bybitLastPrice(sym)).toFixed(); } catch { /* market price is optional here */ }
-      this.priceCache.set(sym, { at: Date.now(), price });
-      out[sym] = price;
+      try { price = (await marketLastPrice(v, sym)).toFixed(); } catch { /* market price is optional here */ }
+      this.priceCache.set(key, { at: Date.now(), price });
+      out[key] = price;
     }));
     return out;
   }
@@ -149,7 +154,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       const snap = l?.engine.snapshot();
       return {
         id: h.run.id, label: seriesLabel(h.run.seriesNo), seriesNo: h.run.seriesNo,
-        symbol: symbolOf(h.run.settings), asset: assetOf(h.run.settings), direction: directionOf(h.run.settings),
+        symbol: symbolOf(h.run.settings), venue: venueOf(h.run.settings), asset: assetOf(h.run.settings), direction: directionOf(h.run.settings),
         basePrice: h.run.basePrice.toFixed(), qty: h.run.qty.toFixed(), orders: h.run.settings.orders, totalZig: h.run.settings.totalZig,
         startUsdt: h.run.settings.startUsdt, dailyReset: !!h.run.settings.dailyReset,
         startedAt: new Date(h.run.startedAt).toISOString(), stoppedAt: h.run.stoppedAt ? new Date(h.run.stoppedAt).toISOString() : null,
@@ -160,20 +165,23 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
         cycles: h.cycles, profit: h.profit.toFixed(4),
       };
     });
-    const pairs = Object.entries(SERIES_PAIRS).map(([symbol, p]) => ({ symbol, asset: p.asset }));
-    const defaults: Record<string, Record<string, SeriesSettings>> = {};
-    for (const { symbol } of pairs) {
-      defaults[symbol] = { SELL_FIRST: appDefaults(symbol as SeriesSymbol, 'SELL_FIRST'), BUY_FIRST: appDefaults(symbol as SeriesSymbol, 'BUY_FIRST') };
-    }
-    const running = runs.filter((r) => r.status !== 'STOPPED');
-    return {
-      runs, running: running.length, maxRunning: MAX_RUNNING_PER_USER,
-      totalProfit: runs.reduce((n, r) => n.plus(r.profit), ZERO).toFixed(4),
-      runningProfit: running.reduce((n, r) => n.plus(r.profit), ZERO).toFixed(4),
-      pairs, markets, defaults,
-      // Kept for older dashboards: the ZIG/USDT defaults and price.
-      marketPrice: markets.ZIGUSDT ?? null, buyFirstDefaults: appDefaults('ZIGUSDT', 'BUY_FIRST'),
-    };
+    // Per exchange: its pairs, default settings, and its own running count, limit and profit.
+    const venues = (Object.keys(VENUE_PAIRS) as SeriesVenue[]).map((venue) => {
+      const mine = runs.filter((r) => r.venue === venue);
+      const running = mine.filter((r) => r.status !== 'STOPPED');
+      const defaults: Record<string, Record<string, SeriesSettings>> = {};
+      for (const symbol of VENUE_PAIRS[venue]) {
+        defaults[symbol] = { SELL_FIRST: appDefaults(symbol, 'SELL_FIRST', venue), BUY_FIRST: appDefaults(symbol, 'BUY_FIRST', venue) };
+      }
+      return {
+        venue, running: running.length, maxRunning: MAX_RUNNING_PER_USER,
+        totalProfit: mine.reduce((n, r) => n.plus(r.profit), ZERO).toFixed(4),
+        runningProfit: running.reduce((n, r) => n.plus(r.profit), ZERO).toFixed(4),
+        pairs: VENUE_PAIRS[venue].map((symbol) => ({ symbol, asset: SERIES_PAIRS[symbol].asset })),
+        defaults,
+      };
+    });
+    return { runs, venues, markets };
   }
 
   /** One of the user's simulations in full. Another user's id is reported as not found. */
@@ -235,7 +243,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     const s = run.settings;
     return {
       id: run.id, label: seriesLabel(run.seriesNo), seriesNo: run.seriesNo, direction,
-      symbol: symbolOf(s), asset: assetOf(s),
+      symbol: symbolOf(s), venue: venueOf(s), asset: assetOf(s),
       status: live ? snap!.status : run.status === 'RUNNING' ? 'STARTING' : 'STOPPED',
       statusReason: live ? snap!.statusReason ?? null : run.statusReason,
       running: !!live,
@@ -283,8 +291,8 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
 
   // ── Plan, start, stop ────────────────────────────────────────────────────────────────────────
 
-  private async market(symbol: SeriesSymbol) {
-    const [specs, price] = await Promise.all([bybitPublicSpecs(symbol), bybitLastPrice(symbol)]);
+  private async market(venue: SeriesVenue, symbol: SeriesSymbol) {
+    const [specs, price] = await Promise.all([marketSpecs(venue, symbol), marketLastPrice(venue, symbol)]);
     return { specs, price };
   }
 
@@ -298,7 +306,10 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   async preview(settings: SeriesSettings) {
-    const { specs, price } = await this.market(symbolOf(settings));
+    const venue = venueOf(settings);
+    if (!isSeriesVenue(venue)) throw new BadRequestException('Exchange must be Bybit or MEXC');
+    if (!VENUE_PAIRS[venue].includes(symbolOf(settings))) throw new BadRequestException(`${symbolOf(settings)} is not listed on ${venue === 'MEXC' ? 'MEXC' : 'Bybit'}`);
+    const { specs, price } = await this.market(venue, symbolOf(settings));
     const plan = this.plan(settings, price, specs);
     const buyFirst = plan.direction === 'BUY_FIRST';
     const one = new Decimal(1);
@@ -313,7 +324,8 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       ? roundDown(plan.qty.mul(one.minus(fee)), specs.lot).mul(closeAt(first)).mul(one.minus(fee)).minus(plan.qty.mul(first))
       : plan.qty.mul(first).mul(one.minus(fee)).minus(plan.qty.div(one.minus(fee)).mul(closeAt(first)));
     return {
-      symbol: symbolOf(settings), asset: assetOf(settings),
+      symbol: symbolOf(settings), venue, asset: assetOf(settings),
+      makerFeePct: specs.makerFee.mul(100).toFixed(),
       direction: plan.direction,
       marketPrice: price.toFixed(),
       basePrice: plan.basePrice.toFixed(),
@@ -337,13 +349,14 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   private async launch(userId: string, tag: string, run: SeriesRun, specs: VenueSpecs, price: Decimal,
     balances: { zig: Decimal; usdt: Decimal }, resume?: { slots: Slot[]; cycles: SeriesCycle[] }) {
     const symbol = symbolOf(run.settings);
+    const feed = venueOf(run.settings);
     const plan = buildPlan(run.settings, price, specs);
     // The plan's base and size are fixed when the series starts; a resume keeps them.
     const fixedPlan = { ...plan, basePrice: run.basePrice, qty: run.qty };
     const log = this.engineLog(tag);
     // Each simulation has its own paper wallet: its own venue, balances and orders.
     const venue = new PaperVenue({
-      symbol, specs, clock: systemClock, log, startPrice: price,
+      symbol, specs, clock: systemClock, log, startPrice: price, feed,
       startBase: balances.zig, startQuote: balances.usdt, idPrefix: `p${Date.now().toString(36)}${run.seriesNo}`,
     });
     const engine = new SeriesEngine({
@@ -384,7 +397,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     this.resetting.add(runId);
     try {
       const boundary = lastResetBoundary(Date.now());
-      const price = await bybitCloseAt(symbolOf(l.run.settings), boundary);
+      const price = await marketCloseAt(venueOf(l.run.settings), symbolOf(l.run.settings), boundary);
       const summary = await l.engine.rebase(price, Date.now());
       if (summary) this.logger.log(`[${tag}] ${symbolOf(l.run.settings)} series ${seriesLabel(l.run.seriesNo)} daily reset: base ${summary.from} -> ${summary.to}, ${summary.orders} orders, ${summary.loopsClosedEarly} open loops closed`);
     } catch (e) {
@@ -403,21 +416,26 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     await l.runner.stop(engine.snapshot().statusReason ?? 'ended').catch(() => undefined);
   }
 
-  /** Starts a new simulation next to any already running (up to MAX_RUNNING_PER_USER). */
+  /** Starts a new simulation next to any already running (up to MAX_RUNNING_PER_USER per exchange). */
   async start(userId: string, email: string, settings: SeriesSettings) {
-    const busy = (this.starting.get(userId) ?? 0);
-    if (this.runningFor(userId).length + busy >= MAX_RUNNING_PER_USER) {
-      throw new ConflictException(`You can run up to ${MAX_RUNNING_PER_USER} simulations at once. Stop one first.`);
+    const venue = venueOf(settings);
+    if (!isSeriesVenue(venue)) throw new BadRequestException('Exchange must be Bybit or MEXC');
+    const name = venue === 'MEXC' ? 'MEXC' : 'Bybit';
+    const key = `${userId}:${venue}`;
+    const busy = (this.starting.get(key) ?? 0);
+    if (this.runningFor(userId, venue).length + busy >= MAX_RUNNING_PER_USER) {
+      throw new ConflictException(`You can run up to ${MAX_RUNNING_PER_USER} simulations at once on ${name}. Stop one first.`);
     }
-    this.starting.set(userId, busy + 1);
+    this.starting.set(key, busy + 1);
     try {
       const symbol = symbolOf(settings);
-      const { specs, price } = await this.market(symbol);
+      if (!VENUE_PAIRS[venue].includes(symbol)) throw new BadRequestException(`${symbol} is not listed on ${name}`);
+      const { specs, price } = await this.market(venue, symbol);
       const plan = this.plan(settings, price, specs);
       const zig = new Decimal(settings.totalZig);
       const usdt = new Decimal(settings.startUsdt);
       const run = await this.store.createRun({
-        ownerId: userId, mode: 'paper', settings: { ...settings, symbol }, basePrice: plan.basePrice, qty: plan.qty,
+        ownerId: userId, mode: 'paper', settings: { ...settings, symbol, venue }, basePrice: plan.basePrice, qty: plan.qty,
         startZig: zig, startUsdt: usdt, startedAt: Date.now(),
       });
       try {
@@ -426,12 +444,31 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
         await this.store.stopRun(run.id, `could not start: ${(e as Error).message}`);
         throw e;
       }
-      this.logger.log(`[${email}] ${symbol} series ${seriesLabel(run.seriesNo)} started at base ${plan.basePrice.toFixed()}`);
+      this.logger.log(`[${email}] ${name} ${symbol} series ${seriesLabel(run.seriesNo)} started at base ${plan.basePrice.toFixed()}`);
       return { id: run.id, ...(await this.overview(userId)) };
     } finally {
-      const n = (this.starting.get(userId) ?? 1) - 1;
-      if (n > 0) this.starting.set(userId, n); else this.starting.delete(userId);
+      const n = (this.starting.get(key) ?? 1) - 1;
+      if (n > 0) this.starting.set(key, n); else this.starting.delete(key);
     }
+  }
+
+  /**
+   * Starts the same simulation on the other exchange: same pair, direction, wallet, order count,
+   * percentages and daily reset, and the same base price as the original has now, so the orders sit
+   * at the same prices (rounded to that exchange's price step). The copy is independent.
+   */
+  async copy(userId: string, runId: string, email: string, target: SeriesVenue) {
+    const run = this.live.get(runId)?.run ?? (await this.store.getRun(runId).catch(() => null));
+    if (!run || run.ownerId !== userId) throw new NotFoundException('No such simulation');
+    if (!isSeriesVenue(target)) throw new BadRequestException('Exchange must be Bybit or MEXC');
+    if (target === venueOf(run.settings)) throw new BadRequestException('Pick the other exchange to copy to');
+    // The original's opening prices as it built them (its base may have moved with the daily reset).
+    const source = venueOf(run.settings);
+    const sourceSpecs = await marketSpecs(source, symbolOf(run.settings));
+    const sourcePlan = buildPlan({ ...run.settings, basePrice: run.basePrice.toFixed() }, run.basePrice, sourceSpecs);
+    return this.start(userId, email, {
+      ...run.settings, venue: target, basePrice: run.basePrice.toFixed(), ladder: sourcePlan.orders.map((o) => o.price.toFixed()),
+    });
   }
 
   /** Cancels every order of one of the user's simulations and ends it. Profit stays recorded. */
@@ -484,7 +521,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     }
     try {
       const [{ specs, price }, slots, cycles] = await Promise.all([
-        this.market(symbolOf(run.settings)), this.store.loadSlots(run.id), this.store.listCycles(run.id),
+        this.market(venueOf(run.settings), symbolOf(run.settings)), this.store.loadSlots(run.id), this.store.listCycles(run.id),
       ]);
       // Rebuild the simulated wallet from the records: what was sold and not bought back is USDT.
       const residual = cycles.reduce((n, c) => n.plus(c.boughtNet).minus(c.soldQty), ZERO);

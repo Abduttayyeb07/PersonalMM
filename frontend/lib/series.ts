@@ -5,7 +5,13 @@ import api from './api';
 export type SeriesDirection = 'SELL_FIRST' | 'BUY_FIRST';
 
 /** Bybit spot pairs a simulation can trade, all against USDT. */
-export type SeriesSymbol = 'ZIGUSDT' | 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT' | 'UNIUSDT' | 'ONDOUSDT' | 'CAKEUSDT';
+export type SeriesSymbol = 'ZIGUSDT' | 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT' | 'UNIUSDT' | 'ONDOUSDT' | 'CAKEUSDT' | 'TAOUSDT';
+
+/** Exchange whose live prices a simulation follows. */
+export type SeriesVenue = 'BYBIT' | 'MEXC';
+export const VENUES: Array<{ id: SeriesVenue; name: string }> = [{ id: 'BYBIT', name: 'Bybit' }, { id: 'MEXC', name: 'MEXC' }];
+export const venueName = (v: SeriesVenue | undefined) => (v === 'MEXC' ? 'MEXC' : 'Bybit');
+export const otherVenue = (v: SeriesVenue | undefined): SeriesVenue => (v === 'MEXC' ? 'BYBIT' : 'MEXC');
 
 export const PAIRS: Record<SeriesSymbol, { asset: string; label: string; priceDp: number; amountDp: number }> = {
   ZIGUSDT: { asset: 'ZIG', label: 'ZIG/USDT', priceDp: 5, amountDp: 2 },
@@ -15,6 +21,7 @@ export const PAIRS: Record<SeriesSymbol, { asset: string; label: string; priceDp
   UNIUSDT: { asset: 'UNI', label: 'UNI/USDT', priceDp: 3, amountDp: 2 },
   ONDOUSDT: { asset: 'ONDO', label: 'ONDO/USDT', priceDp: 4, amountDp: 2 },
   CAKEUSDT: { asset: 'CAKE', label: 'CAKE/USDT', priceDp: 4, amountDp: 3 },
+  TAOUSDT: { asset: 'TAO', label: 'TAO/USDT', priceDp: 2, amountDp: 3 },
 };
 
 /** Number formatting for one pair: prices to its tick, amounts to its lot. */
@@ -36,6 +43,7 @@ export type PairFmt = ReturnType<typeof pairFmt>;
 
 export interface SeriesSettings {
   symbol?: SeriesSymbol;
+  venue?: SeriesVenue;
   direction?: SeriesDirection;
   totalZig: string;
   startUsdt: string;
@@ -97,6 +105,7 @@ export interface SeriesDetail {
   label: string;
   seriesNo: number;
   symbol: SeriesSymbol;
+  venue: SeriesVenue;
   asset: string;
   /** In memory and trading now. */
   running: boolean;
@@ -130,28 +139,53 @@ export interface SeriesDetail {
 
 /** One simulation as a tab or a history row shows it. */
 export interface SeriesRunSummary {
-  id: string; label: string; seriesNo: number; symbol: SeriesSymbol; asset: string; direction: SeriesDirection;
+  id: string; label: string; seriesNo: number; symbol: SeriesSymbol; venue: SeriesVenue; asset: string; direction: SeriesDirection;
   basePrice: string; qty: string; orders: number; totalZig: string; startUsdt: string; dailyReset: boolean;
   startedAt: string; stoppedAt: string | null;
   status: SeriesStatus; statusReason: string | null; live: boolean; openOrders: number;
   cycles: number; profit: string;
 }
 
+/** What the API returns: every simulation of the user, and each exchange's pairs, limits and totals. */
+export interface SeriesOverviewResponse {
+  runs: SeriesRunSummary[];
+  venues: Array<{
+    venue: SeriesVenue; running: number; maxRunning: number; totalProfit: string; runningProfit: string;
+    pairs: Array<{ symbol: SeriesSymbol; asset: string }>;
+    defaults: Record<string, Record<SeriesDirection, SeriesSettings>>;
+  }>;
+  /** Last prices keyed "BYBIT:ZIGUSDT". */
+  markets: Record<string, string | null>;
+}
+
+/** One exchange's slice of the overview: its simulations, pairs, prices, limit and totals. */
 export interface SeriesOverview {
-  /** Every simulation of the user, newest first. */
+  venue: SeriesVenue;
   runs: SeriesRunSummary[];
   running: number;
   maxRunning: number;
   totalProfit: string;
   runningProfit: string;
   pairs: Array<{ symbol: SeriesSymbol; asset: string }>;
+  /** Last prices on this exchange, by symbol. */
   markets: Record<string, string | null>;
-  /** Default settings per pair and direction. */
   defaults: Record<string, Record<SeriesDirection, SeriesSettings>>;
+}
+
+export function venueView(o: SeriesOverviewResponse, venue: SeriesVenue): SeriesOverview {
+  const v = o.venues.find((x) => x.venue === venue) ?? o.venues[0];
+  const markets: Record<string, string | null> = {};
+  for (const [key, price] of Object.entries(o.markets)) {
+    const [ex, sym] = key.split(':');
+    if (ex === v.venue) markets[sym] = price;
+  }
+  return { ...v, runs: o.runs.filter((r) => (r.venue ?? 'BYBIT') === v.venue), markets };
 }
 
 export interface SeriesPreview {
   symbol: SeriesSymbol;
+  venue: SeriesVenue;
+  makerFeePct: string;
   asset: string;
   direction: SeriesDirection;
   marketPrice: string;
@@ -167,11 +201,13 @@ export interface SeriesPreview {
   minOrderValue: string;
 }
 
-export const getSeries = () => api.get<SeriesOverview>('/series');
+export const getSeries = () => api.get<SeriesOverviewResponse>('/series');
 export const getSeriesDetail = (id: string) => api.get<SeriesDetail>(`/series/${id}`);
 export const previewSeries = (settings: SeriesSettings) => api.post<SeriesPreview>('/series/preview', { settings });
-export const startSeries = (settings: SeriesSettings) => api.post<SeriesOverview & { id: string }>('/series/start', { settings });
-export const stopSeries = (id: string) => api.post<SeriesOverview>(`/series/${id}/stop`);
+export const startSeries = (settings: SeriesSettings) => api.post<SeriesOverviewResponse & { id: string }>('/series/start', { settings });
+export const stopSeries = (id: string) => api.post<SeriesOverviewResponse>(`/series/${id}/stop`);
+/** Starts the same simulation (same settings and base price) on the other exchange. */
+export const copySeries = (id: string, venue: SeriesVenue) => api.post<SeriesOverviewResponse & { id: string }>(`/series/${id}/copy`, { venue });
 
 export const KIND_LABEL: Record<OrderKind, string> = {
   FIRST_SELL: 'First sell', BUYBACK: 'Buyback', RESELL: 'Re-sell',

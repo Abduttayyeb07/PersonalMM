@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import { ago, usd } from '../../lib/engine';
-import { PairFmt, STATUS_INFO, SeriesDetail, pairFmt, stopSeries, words } from '../../lib/series';
+import { errorMessage } from '../../lib/engine';
+import { PairFmt, STATUS_INFO, SeriesDetail, SeriesVenue, copySeries, otherVenue, pairFmt, stopSeries, venueName, words } from '../../lib/series';
 import { AreaChart, useWidth } from '../console/charts';
 import { Card, ConfirmDialog, Empty, KV } from '../console/ui';
 import { ActivityList, FillsTable, KindPill } from './Tables';
@@ -13,8 +14,27 @@ export function midOf(s: SeriesDetail | null, market: string | null | undefined)
 }
 
 /** Status of the selected simulation and its own stop button. Other simulations are not touched. */
-export function ControlBar({ s, now, onChanged, onNew }: { s: SeriesDetail; now: number; onChanged: () => void; onNew: () => void }) {
+export function ControlBar({ s, now, onChanged, onNew, onCopied }: {
+  s: SeriesDetail; now: number; onChanged: () => void; onNew: () => void; onCopied: (id: string, venue: SeriesVenue) => void;
+}) {
   const [confirm, setConfirm] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const target = otherVenue(s.venue);
+  // TAO is MEXC-only: there is nothing to copy it to on Bybit.
+  const canCopy = !(target === 'BYBIT' && s.symbol === 'TAOUSDT');
+  async function copy() {
+    setCopying(true);
+    setCopyError(null);
+    try {
+      const { data } = await copySeries(s.id, target);
+      onCopied(data.id, target);
+    } catch (e) {
+      setCopyError(errorMessage(e, `Could not start the copy on ${venueName(target)}.`));
+    } finally {
+      setCopying(false);
+    }
+  }
   const fmt = pairFmt(s.symbol);
   const status = STATUS_INFO[s.running ? s.status : s.status === 'STARTING' ? 'STARTING' : 'STOPPED'];
   const out = Number(s.totals.zigOut);
@@ -24,18 +44,25 @@ export function ControlBar({ s, now, onChanged, onNew }: { s: SeriesDetail; now:
       <div className="c-control-state">
         <span className="c-dot" aria-hidden style={{ background: status.color, boxShadow: s.running ? '0 0 0 4px rgba(63,208,143,.15)' : undefined }} />
         <div>
-          <b>{`${fmt.label} · Series ${s.label} · ${status.label}`}</b>
+          <b>{`${venueName(s.venue)} · ${fmt.label} · Series ${s.label} · ${status.label}`}</b>
           <small>
             {active && `${words(s.direction).name} · base ${fmt.price(s.plan.basePrice)} · started ${ago(s.startedAt, now)} · ${s.statusReason ?? status.help}`}
             {!active && `Ended ${s.stoppedAt ? ago(s.stoppedAt, now) : ''}${s.statusReason ? `: ${s.statusReason}` : ''}`}
           </small>
         </div>
       </div>
+      {canCopy && (
+        <button type="button" className="c-btn c-btn-ghost" disabled={copying} onClick={() => void copy()}
+                title={`Start the same simulation on ${venueName(target)}: same pair, direction, wallet, percentages and base price ${fmt.price(s.plan.basePrice)}`}>
+          {copying ? 'Copying…' : `Copy to ${venueName(target)}`}
+        </button>
+      )}
       {active ? (
         <button type="button" className="c-btn c-btn-danger" onClick={() => setConfirm(true)}>Stop this simulation</button>
       ) : (
         <button type="button" className="c-btn c-btn-primary" onClick={onNew}>Start a new simulation</button>
       )}
+      {copyError && <p className="c-error w-full" role="alert">{copyError}</p>}
       {confirm && (
         <ConfirmDialog
           title={`Stop ${fmt.label} Series ${s.label}?`}
@@ -142,7 +169,7 @@ export function DashboardPage({ s, market }: { s: SeriesDetail; market: string |
         </Card>
         <div className="c-section-gap">
           <Card title="This simulation">
-            <KV label="Pair" value={fmt.label} />
+            <KV label="Pair" value={`${fmt.label} · ${venueName(s.venue)}`} />
             <KV label="Direction" value={w.name} tone={w.buy ? 'var(--buy)' : 'var(--sell)'} />
             <KV label="Base price" value={fmt.price(s.plan.basePrice)} />
             <KV label="Orders" value={`${st.orders} ${w.opening} × ${fmt.amount(s.plan.qty)} ${fmt.asset}`} />

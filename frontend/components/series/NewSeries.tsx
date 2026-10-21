@@ -3,19 +3,21 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { errorMessage, usd } from '../../lib/engine';
 import {
-  PAIRS, SeriesDirection, SeriesOverview, SeriesPreview, SeriesSettings, SeriesSymbol, pairFmt, previewSeries, seriesLabelFor, startSeries, words,
+  PAIRS, SeriesDirection, SeriesOverview, SeriesPreview, SeriesSettings, SeriesSymbol, SeriesVenue, pairFmt, previewSeries, seriesLabelFor, startSeries, venueName, words,
 } from '../../lib/series';
 import { Card } from '../console/ui';
 
 type Draft = Record<'basePrice' | 'totalZig' | 'startUsdt' | 'sellPct' | 'orders' | 'firstSellPct' | 'stepPct' | 'buybackPct' | 'resellPct' | 'maxHours', string> & {
   direction: SeriesDirection;
   symbol: SeriesSymbol;
+  venue: SeriesVenue;
   dailyReset: boolean;
 };
 
 const toDraft = (s: SeriesSettings): Draft => ({
   direction: s.direction ?? 'SELL_FIRST',
   symbol: s.symbol ?? 'ZIGUSDT',
+  venue: s.venue ?? 'BYBIT',
   basePrice: s.basePrice ?? '', totalZig: s.totalZig, startUsdt: s.startUsdt, sellPct: s.sellPct, orders: String(s.orders),
   firstSellPct: s.firstSellPct, stepPct: s.stepPct, buybackPct: s.buybackPct, resellPct: s.resellPct,
   maxHours: s.maxHours === null ? '' : String(s.maxHours),
@@ -24,6 +26,7 @@ const toDraft = (s: SeriesSettings): Draft => ({
 
 const fromDraft = (d: Draft): SeriesSettings => ({
   symbol: d.symbol,
+  venue: d.venue,
   direction: d.direction,
   totalZig: d.totalZig.trim() || '0', startUsdt: d.startUsdt.trim() || '0', basePrice: d.basePrice.trim() || null, sellPct: d.sellPct.trim(),
   orders: Number(d.orders), firstSellPct: d.firstSellPct.trim(), stepPct: d.stepPct.trim(),
@@ -81,7 +84,7 @@ const directions = (asset: string): Array<{ id: SeriesDirection; title: string; 
 ];
 
 export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: (id: string) => void }) {
-  const [draft, setDraft] = useState<Draft>(() => toDraft(o.defaults.ZIGUSDT.SELL_FIRST));
+  const [draft, setDraft] = useState<Draft>(() => toDraft(o.defaults[o.pairs[0]?.symbol ?? 'ZIGUSDT'].SELL_FIRST));
   const [preview, setPreview] = useState<SeriesPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -148,10 +151,10 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
   const shown = preview?.direction === draft.direction && preview?.symbol === draft.symbol ? preview : null;
   return (
     <div className="c-grid-main">
-      <Card title={`New simulation · Series ${nextLabel}`} sub={`Runs next to your other simulations, with its own paper wallet. ${o.running} of ${o.maxRunning} running now. Every order is a post-only limit order; nothing is sent at market.`}>
+      <Card title={`New ${venueName(o.venue)} simulation · Series ${nextLabel}`} sub={`Follows live ${venueName(o.venue)} prices, next to your other simulations, with its own paper wallet. ${o.running} of ${o.maxRunning} running on ${venueName(o.venue)}. Every order is a post-only limit order; nothing is sent at market.`}>
         <form onSubmit={submit} className="grid gap-7">
           <div className="c-segment s-pairs" role="radiogroup" aria-label="Pair">
-            {(Object.keys(PAIRS) as SeriesSymbol[]).map((sym) => (
+            {o.pairs.map((p) => p.symbol).map((sym) => (
               <button key={sym} type="button" role="radio" id={`series-pair-${sym}`} aria-checked={draft.symbol === sym} onClick={() => pick(sym, draft.direction)}>
                 {PAIRS[sym].label}
                 {o.markets[sym] && <span className="num" style={{ marginLeft: 8, color: 'var(--muted)' }}>{pairFmt(sym).price(o.markets[sym]!)}</span>}
@@ -215,13 +218,13 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
               {busy ? 'Starting…' : `Start ${fmt.label} · Series ${nextLabel} (${w.name.toLowerCase()})`}
             </button>
             <span className="text-[13px]" style={{ color: full ? 'var(--bad)' : 'var(--muted)' }}>
-              {full ? `${o.maxRunning} simulations are running, the most at once. Stop one to start another.` : 'Paper trading on live Bybit prices. No real orders.'}
+              {full ? `${o.maxRunning} simulations are running on ${venueName(o.venue)}, the most at once. Stop one to start another.` : `Paper trading on live ${venueName(o.venue)} prices. No real orders.`}
             </span>
           </div>
         </form>
       </Card>
 
-      <Card title="Orders it will place" sub={shown ? `${fmt.label} · ${w.name} · market ${fmt.price(shown.marketPrice)} · base ${fmt.price(shown.basePrice)}` : 'Fill in the settings to see the orders.'}>
+      <Card title="Orders it will place" sub={shown ? `${venueName(o.venue)} ${fmt.label} · ${w.name} · market ${fmt.price(shown.marketPrice)} · base ${fmt.price(shown.basePrice)} · maker fee ${shown.makerFeePct}%` : 'Fill in the settings to see the orders.'}>
         {shown && (
           <>
             <div className="mb-4 grid grid-cols-2 gap-3 text-[13px]">

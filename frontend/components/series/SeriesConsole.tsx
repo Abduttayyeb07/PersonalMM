@@ -1,9 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuthStore } from '../../store/auth';
 import { errorMessage, usd } from '../../lib/engine';
-import { STATUS_INFO, SeriesDetail, SeriesOverview, getSeries, getSeriesDetail, pairFmt, words, SeriesSymbol, PAIRS } from '../../lib/series';
+import {
+  STATUS_INFO, SeriesDetail, SeriesOverview, SeriesOverviewResponse, SeriesSymbol, SeriesVenue, PAIRS, VENUES, getSeries, getSeriesDetail,
+  pairFmt, venueName, venueView, words,
+} from '../../lib/series';
 import ConnectExchange from '../ConnectExchange';
 import { Card, Empty } from '../console/ui';
 import { ControlBar, DashboardPage, midOf } from './Dashboard';
@@ -27,7 +30,7 @@ const HEADINGS: Record<Tab, { title: string; lede: string }> = {
   orders: { title: 'Orders', lede: 'Each order slot of this simulation: what it is waiting as now, where it sits against the market, and what it has earned.' },
   fills: { title: 'Fills', lede: 'Every order of this simulation that filled, newest first.' },
   loops: { title: 'Loops', lede: 'Each completed loop (a sell and a buy) of this simulation and the profit it booked.' },
-  history: { title: 'All simulations', lede: 'Every simulation you have run, on any pair. Open one to see its dashboard.' },
+  history: { title: 'All simulations', lede: 'Every simulation you have run on this exchange, on any pair. Open one to see its dashboard.' },
   new: { title: 'New simulation', lede: 'Pick a pair, sell first or buy first, and the ladder. It runs next to your other simulations with its own paper wallet.' },
   keys: { title: 'Exchange keys', lede: 'Connect a trade-only key. It is encrypted for your account only and can never be read back.' },
 };
@@ -76,7 +79,7 @@ function useNow(ms = 1000) {
  */
 function RunBar({ o, selectedId, onSelect, onNew }: { o: SeriesOverview; selectedId: string | null; onSelect: (id: string) => void; onNew: () => void }) {
   const shown = o.runs.filter((r) => r.status !== 'STOPPED' || r.id === selectedId);
-  const order = Object.keys(PAIRS) as SeriesSymbol[];
+  const order = (Object.keys(PAIRS) as SeriesSymbol[]).filter((sym) => o.pairs.some((p) => p.symbol === sym));
   const groups = order
     .map((sym) => ({
       sym,
@@ -130,9 +133,12 @@ export default function SeriesConsole() {
     const v = readPref('zig.series.tab') as Tab | null;
     return v && TABS.some((t) => t.id === v) ? v : 'dashboard';
   });
-  const [picked, setPicked] = useState<string | null>(() => readPref('zig.series.run'));
+  const [venue, setVenue] = useState<SeriesVenue>(() => (readPref('zig.series.venue') === 'MEXC' ? 'MEXC' : 'BYBIT'));
+  const [picked, setPicked] = useState<string | null>(() => readPref(`zig.series.run.${readPref('zig.series.venue') === 'MEXC' ? 'MEXC' : 'BYBIT'}`));
   const overviewFetch = useCallback(async () => (await getSeries()).data, []);
-  const { data: o, error, reload } = usePoll<SeriesOverview>(overviewFetch, 4000);
+  const { data: all, error, reload } = usePoll<SeriesOverviewResponse>(overviewFetch, 4000);
+  // Everything below works on one exchange's simulations at a time.
+  const o: SeriesOverview | null = useMemo(() => (all ? venueView(all, venue) : null), [all, venue]);
   const now = useNow();
 
   // The simulation on screen: the one you picked if it still exists, else the first running one, else the newest.
@@ -144,7 +150,22 @@ export default function SeriesConsole() {
   const s = rawDetail && rawDetail.id === selectedId ? rawDetail : null;
 
   const go = (t: Tab) => { setTab(t); writePref('zig.series.tab', t); window.scrollTo({ top: 0 }); };
-  const select = (id: string) => { setPicked(id); writePref('zig.series.run', id); if (tab === 'history' || tab === 'new' || tab === 'keys') go('dashboard'); };
+  const select = (id: string) => { setPicked(id); writePref(`zig.series.run.${venue}`, id); if (tab === 'history' || tab === 'new' || tab === 'keys') go('dashboard'); };
+  const switchVenue = (v: SeriesVenue) => {
+    if (v === venue) return;
+    setVenue(v);
+    writePref('zig.series.venue', v);
+    setPicked(readPref(`zig.series.run.${v}`));
+  };
+  // A copy opens on its exchange's tab.
+  const openCopy = (id: string, v: SeriesVenue) => {
+    setVenue(v);
+    writePref('zig.series.venue', v);
+    setPicked(id);
+    writePref(`zig.series.run.${v}`, id);
+    void reload();
+    go('dashboard');
+  };
   const refresh = () => { void reload(); void reloadDetail(); };
 
   const fmt = pairFmt(s?.symbol);
@@ -159,17 +180,17 @@ export default function SeriesConsole() {
       <header className="c-header">
         <div className="c-brand">
           <span className="c-brand-mark" aria-hidden>Z</span>
-          <span className="c-brand-name">ZIG Series<span className="c-brand-sub">ZIG and BTC loops, sell first or buy first</span></span>
+          <span className="c-brand-name">ZIG Series<span className="c-brand-sub">Bybit and MEXC loops, sell first or buy first</span></span>
         </div>
         <div className="c-header-context">
           {s ? <><b>{fmt.label}</b> <span style={{ margin: '0 12px', color: 'var(--faint)' }}>/</span> Series <b>{s.label}</b> <span style={{ margin: '0 12px', color: 'var(--faint)' }}>/</span> <b>{words(s.direction).name}</b></> : 'No simulation selected'}
         </div>
         <div className="c-header-right">
-          {o && (Object.entries(o.markets) as Array<[string, string | null]>).map(([sym, p]) => p && (
-            <span key={sym} className="c-hide-sm" style={{ color: 'var(--muted)' }}>
-              {pairFmt(sym as SeriesSymbol).label} <span className="num" style={{ color: 'var(--ink)' }}>{pairFmt(sym as SeriesSymbol).price(p)}</span>
+          {s && market && (
+            <span className="c-hide-sm" style={{ color: 'var(--muted)' }}>
+              {venueName(venue)} {fmt.label} <span className="num" style={{ color: 'var(--ink)' }}>{fmt.price(market)}</span>
             </span>
-          ))}
+          )}
           <span className="c-mode-badge">Paper</span>
           <span className="c-avatar" title={email ?? ''}>{(email ?? '?')[0].toUpperCase()}</span>
           <button type="button" className="c-link" onClick={logout}>Sign out</button>
@@ -179,12 +200,26 @@ export default function SeriesConsole() {
       <main className="c-main">
         <div className="c-heading">
           <div>
-            <p className="c-kicker">{s && perRun ? `${fmt.label} · Bybit spot · Series ${s.label}` : 'Bybit spot · paper trading'}</p>
+            <p className="c-kicker">{s && perRun ? `${fmt.label} · ${venueName(venue)} spot · Series ${s.label}` : `${venueName(venue)} spot · paper trading`}</p>
             <h1 className="c-title">{heading.title}<span>.</span></h1>
             <p className="c-lede">{heading.lede}</p>
           </div>
           {status && perRun && <span className="c-pill"><i style={{ background: status.color }} />{status.label}</span>}
         </div>
+
+        {all && (
+          <div className="c-segment s-venues" role="tablist" aria-label="Exchange">
+            {VENUES.map((v) => {
+              const view = all.venues.find((x) => x.venue === v.id);
+              return (
+                <button key={v.id} type="button" role="tab" id={`venue-${v.id}`} aria-selected={venue === v.id} onClick={() => switchVenue(v.id)}>
+                  {v.name}
+                  <span className="num" style={{ marginLeft: 8, color: 'var(--muted)' }}>{view?.running ?? 0} running · {usd(view?.runningProfit ?? 0)}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {o && <RunBar o={o} selectedId={selectedId} onSelect={select} onNew={() => go('new')} />}
 
@@ -206,11 +241,11 @@ export default function SeriesConsole() {
 
         {o && perRun && !selectedId && (
           <div className="c-card c-card-pad">
-            <Empty title="No simulation yet">Open <b>New simulation</b>, pick a pair, sell first or buy first, and start. You can run up to {o.maxRunning} at once.</Empty>
+            <Empty title={`No ${venueName(venue)} simulation yet`}>Open <b>New simulation</b>, pick a pair, sell first or buy first, and start. You can run up to {o.maxRunning} at once on {venueName(venue)}.</Empty>
           </div>
         )}
         {o && perRun && selectedId && !s && <div className="c-card c-card-pad"><Empty title="Loading this simulation…" /></div>}
-        {o && perRun && s && <ControlBar s={s} now={now} onChanged={refresh} onNew={() => go('new')} />}
+        {o && perRun && s && <ControlBar s={s} now={now} onChanged={refresh} onNew={() => go('new')} onCopied={openCopy} />}
 
         {perRun && s && tab === 'dashboard' && <DashboardPage s={s} market={market} />}
         {perRun && s && tab === 'orders' && (
@@ -230,14 +265,14 @@ export default function SeriesConsole() {
           </div>
         )}
         {o && tab === 'history' && (
-          <Card title="All simulations" sub={`${o.running} running now. Profit of everything you have run: ${usd(o.totalProfit)}.`}>
+          <Card title={`All ${venueName(venue)} simulations`} sub={`${o.running} running now. Profit of everything you have run on ${venueName(venue)}: ${usd(o.totalProfit)}.`}>
             <HistoryTable rows={o.runs} onOpen={select} selectedId={selectedId} />
           </Card>
         )}
-        {o && tab === 'new' && <NewSeriesPage o={o} onStarted={(id) => { setPicked(id); writePref('zig.series.run', id); void reload(); go('dashboard'); }} />}
+        {o && tab === 'new' && <NewSeriesPage key={venue} o={o} onStarted={(id) => { setPicked(id); writePref(`zig.series.run.${venue}`, id); void reload(); go('dashboard'); }} />}
         {tab === 'keys' && <ConnectExchange />}
 
-        <p className="c-footer">Paper trading: live Bybit prices, simulated fills and a separate paper wallet per simulation. No real orders. Your data is yours alone.</p>
+        <p className="c-footer">Paper trading: live {venueName(venue)} prices, simulated fills and a separate paper wallet per simulation. No real orders. Your data is yours alone.</p>
       </main>
     </div>
   );

@@ -275,3 +275,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .s-run-group-label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding-left: 2px; }
 .s-run-group-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
 .s-run-new { align-self: end; }
+
+/* Exchange switch (Bybit / MEXC) above the simulation tabs. */
+.s-venues { display: flex; flex-wrap: wrap; margin-bottom: 18px; }
+.s-venues button { padding: 10px 18px; font-size: 14px; }
+.s-venues button[aria-selected='true'] { background: #20374b; color: var(--ink); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); font-weight: 600; }

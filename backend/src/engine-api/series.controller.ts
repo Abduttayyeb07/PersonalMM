@@ -3,11 +3,16 @@ import { Throttle } from '@nestjs/throttler';
 import { Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsNumber, IsNumberString, IsOptional, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { SERIES_PAIRS, SeriesSymbol } from '../series/types';
+import { SERIES_PAIRS, SeriesSymbol, SeriesVenue } from '../series/types';
 import { SeriesService } from './series.service';
+
+class CopyDto {
+  @IsIn(['BYBIT', 'MEXC']) venue!: SeriesVenue;
+}
 
 class SeriesSettingsDto {
   @IsOptional() @IsIn(Object.keys(SERIES_PAIRS)) symbol?: SeriesSymbol;
+  @IsOptional() @IsIn(['BYBIT', 'MEXC']) venue?: SeriesVenue;
   @IsOptional() @IsIn(['SELL_FIRST', 'BUY_FIRST']) direction?: 'SELL_FIRST' | 'BUY_FIRST';
   @IsOptional() @IsBoolean() dailyReset?: boolean;
   @IsNumberString() @MaxLength(20) totalZig!: string;
@@ -62,5 +67,13 @@ export class SeriesController {
   @HttpCode(200)
   stop(@Req() req: any, @Param('id', ParseUUIDPipe) id: string) {
     return this.series.stop(req.user.id, id, req.user.email);
+  }
+
+  /** Starts the same simulation on the other exchange (same settings and base price). */
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Post(':id/copy')
+  @HttpCode(200)
+  copy(@Req() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CopyDto) {
+    return this.series.copy(req.user.id, id, req.user.email, dto.venue);
   }
 }

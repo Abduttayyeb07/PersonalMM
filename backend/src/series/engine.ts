@@ -603,7 +603,7 @@ export class SeriesEngine {
       let plan: SeriesPlan;
       try {
         plan = buildPlan(
-          { ...run.settings, basePrice: newBase.toFixed(), totalZig: balances.base.toFixed(), startUsdt: balances.quote.toFixed() },
+          { ...run.settings, ladder: undefined, basePrice: newBase.toFixed(), totalZig: balances.base.toFixed(), startUsdt: balances.quote.toFixed() },
           newBase, specs,
         );
       } catch (e) {

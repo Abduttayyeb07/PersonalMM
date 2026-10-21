@@ -480,3 +480,17 @@ describe('BTC/USDT: same rules as ZIG', () => {
     expect(await r.sim.getOpenOrders()).toHaveLength(15);
   });
 });
+
+describe('copying a ladder to another exchange', () => {
+  it('keeps the exact prices on a finer tick and rounds away from the base on a coarser one', () => {
+    const mexcZig = { ...BYBIT_ZIG_SPECS, tick: D('0.000001'), minOrderValue: D(1), makerFee: D(0) };
+    const s = { ...defaultSeriesSettings(), sellPct: '100', basePrice: '0.04798', firstSellPct: '0.5', stepPct: '0.25' };
+    const bybit = buildPlan(s, D('0.048'), BYBIT_ZIG_SPECS);
+    const copy = buildPlan({ ...s, ladder: bybit.orders.map((o) => o.price.toFixed()) }, D('0.048'), mexcZig);
+    expect(copy.orders.map((o) => o.price.toFixed())).toEqual(bybit.orders.map((o) => o.price.toFixed()));
+    expect(copy.qty.toFixed()).toBe(bybit.qty.toFixed());
+    // MEXC -> Bybit: a sell is rounded up, never placed below the copied price.
+    const back = buildPlan({ ...s, ladder: ['0.048221', '0.048342'], orders: 2 }, D('0.048'), BYBIT_ZIG_SPECS);
+    expect(back.orders.map((o) => o.price.toFixed())).toEqual(['0.04823', '0.04835']);
+  });
+});

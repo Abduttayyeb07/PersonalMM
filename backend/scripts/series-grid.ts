@@ -1,7 +1,6 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { candlesFor } from '../src/engine/backtest/candles';
-import { bybitPublicSpecs } from '../src/engine/venue/bybit-public';
+import { MarketVenue, marketCandles, marketSpecs } from '../src/engine/venue/markets';
 import { appDefaults } from '../src/engine-api/series.service';
 import { runSeriesBacktest } from '../src/series/backtest';
 import { SeriesDirection, SeriesSymbol } from '../src/series/types';
@@ -27,14 +26,16 @@ async function main() {
   const symbol = arg('symbol', 'SOLUSDT') as SeriesSymbol;
   const days = Number(arg('days', '30'));
   const train = Number(arg('train', '23'));
-  const specs = await bybitPublicSpecs(symbol);
-  const candles = await candlesFor(symbol, days, join('engine-data', `${symbol}-1m-${days}d.csv`));
+  const venue = arg('venue', 'BYBIT') as MarketVenue;
+  const specs = await marketSpecs(venue, symbol);
+  const tag = venue === 'BYBIT' ? symbol : `${symbol}-${venue}`;
+  const candles = await marketCandles(venue, symbol, days, join('engine-data', `${tag}-1m-${days}d.csv`));
   const split = candles[0].start + train * 86_400_000;
   const trainC = candles.filter((c) => c.start < split);
   const testC = candles.filter((c) => c.start >= split);
   const out: unknown[] = [];
   for (const direction of ['SELL_FIRST', 'BUY_FIRST'] as SeriesDirection[]) {
-    const base = appDefaults(symbol, direction);
+    const base = { ...appDefaults(symbol, direction), venue };
     for (const firstSellPct of FIRST) for (const stepPct of STEP) for (const loop of LOOP) for (const dailyReset of RESET) {
       const settings = { ...base, firstSellPct, stepPct, buybackPct: loop, resellPct: loop, dailyReset, basePrice: null };
       const row: Record<string, unknown> = { symbol, direction, firstSellPct, stepPct, loopPct: loop, dailyReset };
@@ -54,8 +55,8 @@ async function main() {
     process.stdout.write(`${symbol} ${direction} done\n`);
   }
   mkdirSync(join('engine-data', 'grid'), { recursive: true });
-  writeFileSync(join('engine-data', 'grid', `${symbol}.json`), JSON.stringify({
-    symbol, from: new Date(candles[0].start).toISOString(), to: new Date(candles[candles.length - 1].start).toISOString(),
+  writeFileSync(join('engine-data', 'grid', `${tag}.json`), JSON.stringify({
+    symbol: tag, from: new Date(candles[0].start).toISOString(), to: new Date(candles[candles.length - 1].start).toISOString(),
     split: new Date(split).toISOString(), low: Math.min(...candles.map((c) => c.low.toNumber())), high: Math.max(...candles.map((c) => c.high.toNumber())),
     start: candles[0].open.toNumber(), end: candles[candles.length - 1].close.toNumber(), rows: out,
   }));

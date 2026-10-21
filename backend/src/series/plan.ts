@@ -1,7 +1,7 @@
 import Decimal from 'decimal.js';
 import { roundDown, roundUp } from '../engine/lattice';
 import { VenueSpecs } from '../engine/types';
-import { SeriesPlan, SeriesSettings, assetOf, directionOf, isSeriesSymbol } from './types';
+import { SeriesPlan, SeriesSettings, VENUE_PAIRS, assetOf, directionOf, isSeriesSymbol, isSeriesVenue, symbolOf, venueOf } from './types';
 
 export class SeriesSettingsError extends Error {}
 
@@ -55,7 +55,9 @@ export function buildPlan(s: SeriesSettings, marketPrice: Decimal, specs: VenueS
   const direction = directionOf(s);
   if (direction !== 'SELL_FIRST' && direction !== 'BUY_FIRST') throw new SeriesSettingsError('Direction must be sell first or buy first');
   const buyFirst = direction === 'BUY_FIRST';
-  if (s.symbol !== undefined && !isSeriesSymbol(s.symbol)) throw new SeriesSettingsError('Pair must be ZIG/USDT or BTC/USDT');
+  if (s.symbol !== undefined && !isSeriesSymbol(s.symbol)) throw new SeriesSettingsError('That pair is not supported');
+  if (s.venue !== undefined && !isSeriesVenue(s.venue)) throw new SeriesSettingsError('Exchange must be Bybit or MEXC');
+  if (!VENUE_PAIRS[venueOf(s)].includes(symbolOf(s))) throw new SeriesSettingsError(`${symbolOf(s)} is not listed on ${venueOf(s) === 'MEXC' ? 'MEXC' : 'Bybit'} spot`);
   const asset = assetOf(s);
   const totalZig = dec(s.totalZig, `Total ${asset}`);
   const startUsdt = dec(s.startUsdt, 'Starting USDT');
@@ -88,13 +90,23 @@ export function buildPlan(s: SeriesSettings, marketPrice: Decimal, specs: VenueS
   if (s.maxHours !== null && (!(s.maxHours > 0) || s.maxHours > 24 * 90)) throw new SeriesSettingsError('Stop after hours must be between 0 and 2160');
 
   // Prices: the first rounded away from the base (never closer than first%), each next one step%
-  // beyond the previous order's price, to the nearest tick.
+  // beyond the previous order's price, to the nearest tick. A copied ladder keeps its exact prices.
   const prices: Decimal[] = [];
   const one = new Decimal(1);
+  const copied = s.ladder && s.ladder.length === s.orders ? s.ladder.map((p, i) => dec(p, `Copied price ${i + 1}`)) : null;
   let price = buyFirst
     ? roundDown(base.mul(one.minus(first.div(100))), specs.tick)
     : roundUp(base.mul(one.plus(first.div(100))), specs.tick);
   for (let i = 0; i < s.orders; i++) {
+    if (copied) {
+      const p = buyFirst ? roundDown(copied[i], specs.tick) : roundUp(copied[i], specs.tick);
+      // Keep the ladder strictly moving away from the base even if rounding makes two prices equal.
+      const prev = prices[i - 1];
+      price = !prev ? p : buyFirst ? (p.lt(prev) ? p : prev.minus(specs.tick)) : (p.gt(prev) ? p : prev.plus(specs.tick));
+      if (price.lte(0)) throw new SeriesSettingsError('A copied price is not valid on this exchange.');
+      prices.push(price);
+      continue;
+    }
     if (i > 0) {
       const factor = buyFirst ? one.minus(step.div(100)) : one.plus(step.div(100));
       const nextPrice = price.mul(factor).toNearest(specs.tick, Decimal.ROUND_HALF_UP);
