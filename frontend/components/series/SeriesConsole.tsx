@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuthStore } from '../../store/auth';
 import { errorMessage, usd } from '../../lib/engine';
-import { STATUS_INFO, SeriesDetail, SeriesOverview, getSeries, getSeriesDetail, pairFmt, words, SeriesSymbol } from '../../lib/series';
+import { STATUS_INFO, SeriesDetail, SeriesOverview, getSeries, getSeriesDetail, pairFmt, words, SeriesSymbol, PAIRS } from '../../lib/series';
 import ConnectExchange from '../ConnectExchange';
 import { Card, Empty } from '../console/ui';
 import { ControlBar, DashboardPage, midOf } from './Dashboard';
@@ -70,27 +70,45 @@ function useNow(ms = 1000) {
   return now;
 }
 
-/** One tab per active simulation, plus the one you opened from history, plus a New tab. */
+/**
+ * One tab per active simulation (plus the one you opened from history), grouped by pair in the pair
+ * picker's order. Within a pair: sell first, then buy first, oldest first.
+ */
 function RunBar({ o, selectedId, onSelect, onNew }: { o: SeriesOverview; selectedId: string | null; onSelect: (id: string) => void; onNew: () => void }) {
   const shown = o.runs.filter((r) => r.status !== 'STOPPED' || r.id === selectedId);
+  const order = Object.keys(PAIRS) as SeriesSymbol[];
+  const groups = order
+    .map((sym) => ({
+      sym,
+      runs: shown
+        .filter((r) => r.symbol === sym)
+        .sort((a, b) => (a.direction === b.direction ? a.seriesNo - b.seriesNo : a.direction === 'SELL_FIRST' ? -1 : 1)),
+    }))
+    .filter((g) => g.runs.length > 0);
   return (
     <div className="s-runs" role="tablist" aria-label="Your simulations">
-      {shown.map((r) => {
-        const fmt = pairFmt(r.symbol);
-        const st = STATUS_INFO[r.status] ?? STATUS_INFO.STOPPED;
-        return (
-          <button key={r.id} type="button" role="tab" aria-selected={r.id === selectedId} className="s-run" onClick={() => onSelect(r.id)}>
-            <span className="s-run-top">
-              <i style={{ background: st.color }} aria-hidden />
-              <b>{fmt.asset}</b> · Series {r.label}
-            </span>
-            <span className="s-run-sub">
-              <span style={{ color: r.direction === 'BUY_FIRST' ? 'var(--buy)' : 'var(--sell)' }}>{words(r.direction).name}</span>
-              <span className="num" style={{ color: Number(r.profit) > 0 ? 'var(--profit-text)' : undefined }}>{usd(r.profit)}</span>
-            </span>
-          </button>
-        );
-      })}
+      {groups.map((g) => (
+        <div key={g.sym} className="s-run-group" role="group" aria-label={pairFmt(g.sym).label}>
+          <span className="s-run-group-label">{pairFmt(g.sym).label}</span>
+          <div className="s-run-group-tabs">
+            {g.runs.map((r) => {
+              const st = STATUS_INFO[r.status] ?? STATUS_INFO.STOPPED;
+              return (
+                <button key={r.id} type="button" role="tab" aria-selected={r.id === selectedId} className="s-run" onClick={() => onSelect(r.id)}>
+                  <span className="s-run-top">
+                    <i style={{ background: st.color }} aria-hidden />
+                    <b>{pairFmt(r.symbol).asset}</b> · Series {r.label}
+                  </span>
+                  <span className="s-run-sub">
+                    <span style={{ color: r.direction === 'BUY_FIRST' ? 'var(--buy)' : 'var(--sell)' }}>{words(r.direction).name}</span>
+                    <span className="num" style={{ color: Number(r.profit) > 0 ? 'var(--profit-text)' : undefined }}>{usd(r.profit)}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
       {o.running < o.maxRunning && (
         <button type="button" className="s-run s-run-new" onClick={onNew}>
           <span className="s-run-top"><b>+ New simulation</b></span>

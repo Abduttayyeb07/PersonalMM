@@ -71,8 +71,8 @@ function PctField({ id, label, value, onChange, presets }: {
   );
 }
 
-const FIRST_PRESETS = ['1', '1.5', '2', '2.5', '3'];
-const STEP_PRESETS = ['0.5', '0.75', '1', '1.5', '2'];
+const FIRST_PRESETS = ['0.5', '1', '1.5', '2', '2.5', '3'];
+const STEP_PRESETS = ['0.25', '0.5', '0.75', '1', '1.5', '2'];
 const LOOP_PRESETS = ['1.5', '1.75', '1.9', '2', '2.5', '3'];
 
 const directions = (asset: string): Array<{ id: SeriesDirection; title: string; line: string }> => [

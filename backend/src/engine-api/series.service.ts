@@ -44,6 +44,22 @@ interface Live {
  * The app's defaults per pair and direction. The percentages are the same for every pair (first order
  * 3% from the base, 1% apart, 3% buyback / re-sell); only the starting amounts differ.
  */
+/**
+ * Recommended rates per pair and direction: first order from the base, step between orders, and the
+ * loop distance (buyback / re-sell, or sell-back / re-buy). Picked from 120 combinations per pair and
+ * direction on Bybit 1-minute candles (picked on 19/21 Sep - 12/14 Oct 2026, checked on the following
+ * 7 days). Daily reset off: with it on, runs halted once the price trended one way.
+ */
+export const RECOMMENDED_RATES: Record<SeriesSymbol, Record<SeriesDirection, { first: string; step: string; loop: string }>> = {
+  ZIGUSDT: { SELL_FIRST: { first: '1', step: '0.5', loop: '2' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '1.5' } },
+  BTCUSDT: { SELL_FIRST: { first: '3', step: '0.25', loop: '1.5' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
+  ETHUSDT: { SELL_FIRST: { first: '0.5', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '1.5' } },
+  SOLUSDT: { SELL_FIRST: { first: '0.5', step: '0.25', loop: '1.5' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
+  UNIUSDT: { SELL_FIRST: { first: '2', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
+  ONDOUSDT: { SELL_FIRST: { first: '3', step: '1', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
+  CAKEUSDT: { SELL_FIRST: { first: '0.5', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
+};
+
 export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesDirection = 'SELL_FIRST'): SeriesSettings {
   const amounts: Record<SeriesSymbol, { base: string; usdt: string }> = {
     ZIGUSDT: { base: '15000', usdt: '900' },
@@ -56,8 +72,10 @@ export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesD
     CAKEUSDT: { base: '400', usdt: '900' },
   };
   const a = amounts[symbol];
+  const r = RECOMMENDED_RATES[symbol][direction];
   return {
-    ...defaultSeriesSettings(), symbol, direction, sellPct: '100', dailyReset: true,
+    ...defaultSeriesSettings(), symbol, direction, sellPct: '100', dailyReset: false,
+    firstSellPct: r.first, stepPct: r.step, buybackPct: r.loop, resellPct: r.loop,
     totalZig: direction === 'BUY_FIRST' ? '0' : a.base,
     startUsdt: direction === 'BUY_FIRST' ? a.usdt : '0',
   };
