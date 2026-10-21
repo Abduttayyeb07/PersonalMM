@@ -59,7 +59,7 @@ export const RECOMMENDED_RATES: Record<SeriesSymbol, Record<SeriesDirection, { f
   UNIUSDT: { SELL_FIRST: { first: '2', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
   ONDOUSDT: { SELL_FIRST: { first: '3', step: '1', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
   CAKEUSDT: { SELL_FIRST: { first: '0.5', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
-  TAOUSDT: { SELL_FIRST: { first: '0.5', step: '0.25', loop: '3' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
+  TAOUSDT: { SELL_FIRST: { first: '3', step: '0.5', loop: '1.5' }, BUY_FIRST: { first: '0.5', step: '0.25', loop: '3' } },
 };
 
 export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesDirection = 'SELL_FIRST', venue: SeriesVenue = 'BYBIT'): SeriesSettings {
