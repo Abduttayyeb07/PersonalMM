@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuthStore } from '../../store/auth';
 import { errorMessage, usd } from '../../lib/engine';
-import { STATUS_INFO, SeriesDetail, SeriesOverview, getSeries, getSeriesDetail, pairFmt, words } from '../../lib/series';
+import { STATUS_INFO, SeriesDetail, SeriesOverview, getSeries, getSeriesDetail, pairFmt, words, SeriesSymbol } from '../../lib/series';
 import ConnectExchange from '../ConnectExchange';
 import { Card, Empty } from '../console/ui';
 import { ControlBar, DashboardPage, midOf } from './Dashboard';
@@ -149,7 +149,7 @@ export default function SeriesConsole() {
         <div className="c-header-right">
           {o && (Object.entries(o.markets) as Array<[string, string | null]>).map(([sym, p]) => p && (
             <span key={sym} className="c-hide-sm" style={{ color: 'var(--muted)' }}>
-              {pairFmt(sym as 'ZIGUSDT' | 'BTCUSDT').label} <span className="num" style={{ color: 'var(--ink)' }}>{pairFmt(sym as 'ZIGUSDT' | 'BTCUSDT').price(p)}</span>
+              {pairFmt(sym as SeriesSymbol).label} <span className="num" style={{ color: 'var(--ink)' }}>{pairFmt(sym as SeriesSymbol).price(p)}</span>
             </span>
           ))}
           <span className="c-mode-badge">Paper</span>
@@ -188,7 +188,7 @@ export default function SeriesConsole() {
 
         {o && perRun && !selectedId && (
           <div className="c-card c-card-pad">
-            <Empty title="No simulation yet">Open <b>New simulation</b>, pick ZIG/USDT or BTC/USDT, sell first or buy first, and start. You can run up to {o.maxRunning} at once.</Empty>
+            <Empty title="No simulation yet">Open <b>New simulation</b>, pick a pair, sell first or buy first, and start. You can run up to {o.maxRunning} at once.</Empty>
           </div>
         )}
         {o && perRun && selectedId && !s && <div className="c-card c-card-pad"><Empty title="Loading this simulation…" /></div>}

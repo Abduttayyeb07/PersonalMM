@@ -3,10 +3,11 @@ import { Throttle } from '@nestjs/throttler';
 import { Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsNumber, IsNumberString, IsOptional, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { SERIES_PAIRS, SeriesSymbol } from '../series/types';
 import { SeriesService } from './series.service';
 
 class SeriesSettingsDto {
-  @IsOptional() @IsIn(['ZIGUSDT', 'BTCUSDT']) symbol?: 'ZIGUSDT' | 'BTCUSDT';
+  @IsOptional() @IsIn(Object.keys(SERIES_PAIRS)) symbol?: SeriesSymbol;
   @IsOptional() @IsIn(['SELL_FIRST', 'BUY_FIRST']) direction?: 'SELL_FIRST' | 'BUY_FIRST';
   @IsOptional() @IsBoolean() dailyReset?: boolean;
   @IsNumberString() @MaxLength(20) totalZig!: string;

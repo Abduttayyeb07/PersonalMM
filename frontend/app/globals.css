@@ -266,3 +266,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* The pair picker holds many pairs: let it wrap instead of running off the screen. */
+.s-pairs { display: flex; flex-wrap: wrap; max-width: 100%; }

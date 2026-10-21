@@ -5,11 +5,16 @@ import api from './api';
 export type SeriesDirection = 'SELL_FIRST' | 'BUY_FIRST';
 
 /** Bybit spot pairs a simulation can trade, all against USDT. */
-export type SeriesSymbol = 'ZIGUSDT' | 'BTCUSDT';
+export type SeriesSymbol = 'ZIGUSDT' | 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT' | 'UNIUSDT' | 'ONDOUSDT' | 'CAKEUSDT';
 
 export const PAIRS: Record<SeriesSymbol, { asset: string; label: string; priceDp: number; amountDp: number }> = {
   ZIGUSDT: { asset: 'ZIG', label: 'ZIG/USDT', priceDp: 5, amountDp: 2 },
   BTCUSDT: { asset: 'BTC', label: 'BTC/USDT', priceDp: 1, amountDp: 6 },
+  ETHUSDT: { asset: 'ETH', label: 'ETH/USDT', priceDp: 2, amountDp: 5 },
+  SOLUSDT: { asset: 'SOL', label: 'SOL/USDT', priceDp: 2, amountDp: 4 },
+  UNIUSDT: { asset: 'UNI', label: 'UNI/USDT', priceDp: 3, amountDp: 2 },
+  ONDOUSDT: { asset: 'ONDO', label: 'ONDO/USDT', priceDp: 4, amountDp: 2 },
+  CAKEUSDT: { asset: 'CAKE', label: 'CAKE/USDT', priceDp: 4, amountDp: 3 },
 };
 
 /** Number formatting for one pair: prices to its tick, amounts to its lot. */

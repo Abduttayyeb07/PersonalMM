@@ -12,6 +12,11 @@ export type SeriesDirection = 'SELL_FIRST' | 'BUY_FIRST';
 export const SERIES_PAIRS = {
   ZIGUSDT: { asset: 'ZIG' },
   BTCUSDT: { asset: 'BTC' },
+  ETHUSDT: { asset: 'ETH' },
+  SOLUSDT: { asset: 'SOL' },
+  UNIUSDT: { asset: 'UNI' },
+  ONDOUSDT: { asset: 'ONDO' },
+  CAKEUSDT: { asset: 'CAKE' },
 } as const;
 export type SeriesSymbol = keyof typeof SERIES_PAIRS;
 export const isSeriesSymbol = (s: unknown): s is SeriesSymbol => typeof s === 'string' && s in SERIES_PAIRS;

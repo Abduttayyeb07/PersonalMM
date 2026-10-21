@@ -92,17 +92,23 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
   const w = words(draft.direction, fmt.asset);
   const full = o.running >= o.maxRunning;
   const market = o.markets[draft.symbol];
+  const rec = o.defaults[draft.symbol][draft.direction];
+  const isRecommended = draft.firstSellPct === rec.firstSellPct && draft.stepPct === rec.stepPct && draft.buybackPct === rec.buybackPct
+    && draft.resellPct === rec.resellPct && draft.dailyReset === !!rec.dailyReset;
+  const applyRecommended = () => setDraft((d) => ({
+    ...d, firstSellPct: rec.firstSellPct, stepPct: rec.stepPct, buybackPct: rec.buybackPct, resellPct: rec.resellPct, dailyReset: !!rec.dailyReset,
+  }));
 
-  // Switching direction or pair loads its starting amounts; your percentages, auto-stop and daily
-  // reset stay. A new pair also clears the base (a ZIG price means nothing for BTC).
+  // Switching direction or pair loads its starting amount and its recommended rates (from backtests
+  // on real Bybit data); your auto-stop stays. A new pair also clears the base (a ZIG price means
+  // nothing for BTC).
   function pick(symbol: SeriesSymbol, direction: SeriesDirection) {
     if (symbol === draft.symbol && direction === draft.direction) return;
     const defaults = toDraft(o.defaults[symbol][direction]);
     setDraft((d) => ({
       ...defaults,
       basePrice: symbol === d.symbol ? d.basePrice : '',
-      orders: d.orders, firstSellPct: d.firstSellPct, stepPct: d.stepPct, buybackPct: d.buybackPct, resellPct: d.resellPct,
-      maxHours: d.maxHours, dailyReset: d.dailyReset,
+      maxHours: d.maxHours,
     }));
   }
 
@@ -144,7 +150,7 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
     <div className="c-grid-main">
       <Card title={`New simulation · Series ${nextLabel}`} sub={`Runs next to your other simulations, with its own paper wallet. ${o.running} of ${o.maxRunning} running now. Every order is a post-only limit order; nothing is sent at market.`}>
         <form onSubmit={submit} className="grid gap-7">
-          <div className="c-segment" role="radiogroup" aria-label="Pair">
+          <div className="c-segment s-pairs" role="radiogroup" aria-label="Pair">
             {(Object.keys(PAIRS) as SeriesSymbol[]).map((sym) => (
               <button key={sym} type="button" role="radio" id={`series-pair-${sym}`} aria-checked={draft.symbol === sym} onClick={() => pick(sym, draft.direction)}>
                 {PAIRS[sym].label}
@@ -160,6 +166,13 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
                 <span>{d.line}</span>
               </button>
             ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 text-[13px]" style={{ color: 'var(--muted)' }}>
+            <button type="button" className="s-chip" aria-pressed={isRecommended} onClick={applyRecommended}>Use recommended rates</button>
+            <span className="num">
+              {fmt.label} {w.name.toLowerCase()}: first {rec.firstSellPct}% · step {rec.stepPct}% · {w.buy ? 'sell-back' : 'buyback'} {w.buy ? rec.resellPct : rec.buybackPct}% · {w.buy ? 're-buy' : 're-sell'} {w.buy ? rec.buybackPct : rec.resellPct}% · daily reset {rec.dailyReset ? 'on' : 'off'}
+            </span>
           </div>
 
           <div className="grid gap-6 sm:grid-cols-2">

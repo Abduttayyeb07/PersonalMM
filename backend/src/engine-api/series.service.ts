@@ -23,7 +23,7 @@ const DAY_MS = 86_400_000;
 /** Daily reset time: 00:00 in Pakistan (UTC+5, no daylight saving) is 19:00 UTC. */
 const RESET_UTC_OFFSET_MS = 19 * 3_600_000;
 /** Simulations one user can run at the same time. */
-export const MAX_RUNNING_PER_USER = 5;
+export const MAX_RUNNING_PER_USER = 20;
 
 /** The most recent daily reset moment at or before `now`. */
 export function lastResetBoundary(now: number): number {
@@ -48,6 +48,12 @@ export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesD
   const amounts: Record<SeriesSymbol, { base: string; usdt: string }> = {
     ZIGUSDT: { base: '15000', usdt: '900' },
     BTCUSDT: { base: '0.1', usdt: '8000' },
+    // About 900 USDT worth each, like 15,000 ZIG.
+    ETHUSDT: { base: '0.36', usdt: '900' },
+    SOLUSDT: { base: '8.3', usdt: '900' },
+    UNIUSDT: { base: '118', usdt: '900' },
+    ONDOUSDT: { base: '1930', usdt: '900' },
+    CAKEUSDT: { base: '400', usdt: '900' },
   };
   const a = amounts[symbol];
   return {
