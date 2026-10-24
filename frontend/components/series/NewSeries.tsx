@@ -21,7 +21,7 @@ const toDraft = (s: SeriesSettings): Draft => ({
   basePrice: s.basePrice ?? '', totalZig: s.totalZig, startUsdt: s.startUsdt, sellPct: s.sellPct, orders: String(s.orders),
   firstSellPct: s.firstSellPct, stepPct: s.stepPct, buybackPct: s.buybackPct, resellPct: s.resellPct,
   maxHours: s.maxHours === null ? '' : String(s.maxHours),
-  dailyReset: !!s.dailyReset,
+  dailyReset: true,
 });
 
 const fromDraft = (d: Draft): SeriesSettings => ({
@@ -32,7 +32,7 @@ const fromDraft = (d: Draft): SeriesSettings => ({
   orders: Number(d.orders), firstSellPct: d.firstSellPct.trim(), stepPct: d.stepPct.trim(),
   buybackPct: d.buybackPct.trim(), resellPct: d.resellPct.trim(), maxCycles: null,
   maxHours: d.maxHours.trim() ? Number(d.maxHours) : null,
-  dailyReset: d.dailyReset,
+  dailyReset: true,
 });
 
 function Field({ id, label, hint, value, onChange, suffix, placeholder }: {
@@ -97,9 +97,9 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
   const market = o.markets[draft.symbol];
   const rec = o.defaults[draft.symbol][draft.direction];
   const isRecommended = draft.firstSellPct === rec.firstSellPct && draft.stepPct === rec.stepPct && draft.buybackPct === rec.buybackPct
-    && draft.resellPct === rec.resellPct && draft.dailyReset === !!rec.dailyReset;
+    && draft.resellPct === rec.resellPct;
   const applyRecommended = () => setDraft((d) => ({
-    ...d, firstSellPct: rec.firstSellPct, stepPct: rec.stepPct, buybackPct: rec.buybackPct, resellPct: rec.resellPct, dailyReset: !!rec.dailyReset,
+    ...d, firstSellPct: rec.firstSellPct, stepPct: rec.stepPct, buybackPct: rec.buybackPct, resellPct: rec.resellPct,
   }));
 
   // Switching direction or pair loads its starting amount and its recommended rates (from backtests
@@ -174,7 +174,7 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
           <div className="flex flex-wrap items-center gap-3 text-[13px]" style={{ color: 'var(--muted)' }}>
             <button type="button" className="s-chip" aria-pressed={isRecommended} onClick={applyRecommended}>Use recommended rates</button>
             <span className="num">
-              {fmt.label} {w.name.toLowerCase()}: first {rec.firstSellPct}% · step {rec.stepPct}% · {w.buy ? 'sell-back' : 'buyback'} {w.buy ? rec.resellPct : rec.buybackPct}% · {w.buy ? 're-buy' : 're-sell'} {w.buy ? rec.buybackPct : rec.resellPct}% · daily reset {rec.dailyReset ? 'on' : 'off'}
+              {fmt.label} {w.name.toLowerCase()}: first {rec.firstSellPct}% · step {rec.stepPct}% · {w.buy ? 'sell-back' : 'buyback'} {w.buy ? rec.resellPct : rec.buybackPct}% · {w.buy ? 're-buy' : 're-sell'} {w.buy ? rec.buybackPct : rec.resellPct}%
             </span>
           </div>
 
@@ -201,15 +201,14 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
               </>
             )}
             <Field id="maxHours" label="Stop by itself after" value={draft.maxHours} onChange={set('maxHours')} suffix="hours" placeholder="never" hint="Optional. Empty runs until you stop it." />
-            <label htmlFor="series-dailyReset" className="s-toggle sm:col-span-2">
-              <input id="series-dailyReset" type="checkbox" checked={draft.dailyReset}
-                     onChange={(e) => setDraft((d) => ({ ...d, dailyReset: e.target.checked }))} />
+            <div className="s-note sm:col-span-2">
               <span>
-                <b>Reset the base every day at 12:00 midnight (Pakistan)</b>
+                <b>The base resets by itself every day at 12:00 midnight (Pakistan)</b>
                 The base moves to the last 1-minute candle&apos;s close, every order is cancelled (open loops too) and a fresh ladder is placed from the new base.
+                This happens for every simulation, whether you typed a base or left it empty, with nothing to approve.
                 Same series: profit and loops keep adding up. Sold {fmt.asset} from a closed-early loop stays USDT; bought {fmt.asset} stays {fmt.asset}.
               </span>
-            </label>
+            </div>
           </div>
           {previewError && <p className="c-error" role="alert">{previewError}</p>}
           {error && <p className="c-error" role="alert">{error}</p>}

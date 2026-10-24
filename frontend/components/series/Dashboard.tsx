@@ -188,7 +188,7 @@ export function DashboardPage({ s, market }: { s: SeriesDetail; market: string |
             )}
             {s.balances && <KV label="Wallet now" value={`${fmt.amount(s.balances.zig)} ${fmt.asset} · ${usd(s.balances.usdt)}`} />}
             <KV label="Fees paid" value={usd(t.fees)} />
-            <KV label="Daily reset" value={s.dailyReset ? (s.dailyReset.nextAt ? `On · next ${new Date(s.dailyReset.nextAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : 'On') : 'Off'} />
+            <KV label="Daily base reset" value={s.dailyReset?.nextAt ? `Automatic · next ${new Date(s.dailyReset.nextAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : 'Automatic, 12:00 midnight (Pakistan)'} />
             {s.dailyReset && s.dailyReset.resets > 0 && <KV label="Resets done" value={String(s.dailyReset.resets)} />}
             {s.dailyReset && Number(s.dailyReset.zigLeftOpen) !== 0 && (
               <KV label={Number(s.dailyReset.zigLeftOpen) > 0 ? `${fmt.asset} left sold by resets` : `${fmt.asset} left bought by resets`} value={fmt.amount(Math.abs(Number(s.dailyReset.zigLeftOpen)))} />

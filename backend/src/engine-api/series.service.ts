@@ -77,7 +77,7 @@ export function appDefaults(symbol: SeriesSymbol = 'ZIGUSDT', direction: SeriesD
   const a = amounts[symbol];
   const r = RECOMMENDED_RATES[symbol][direction];
   return {
-    ...defaultSeriesSettings(), symbol, venue, direction, sellPct: '100', dailyReset: false,
+    ...defaultSeriesSettings(), symbol, venue, direction, sellPct: '100', dailyReset: true,
     firstSellPct: r.first, stepPct: r.step, buybackPct: r.loop, resellPct: r.loop,
     totalZig: direction === 'BUY_FIRST' ? '0' : a.base,
     startUsdt: direction === 'BUY_FIRST' ? a.usdt : '0',
@@ -156,7 +156,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
         id: h.run.id, label: seriesLabel(h.run.seriesNo), seriesNo: h.run.seriesNo,
         symbol: symbolOf(h.run.settings), venue: venueOf(h.run.settings), asset: assetOf(h.run.settings), direction: directionOf(h.run.settings),
         basePrice: h.run.basePrice.toFixed(), qty: h.run.qty.toFixed(), orders: h.run.settings.orders, totalZig: h.run.settings.totalZig,
-        startUsdt: h.run.settings.startUsdt, dailyReset: !!h.run.settings.dailyReset,
+        startUsdt: h.run.settings.startUsdt, dailyReset: true,
         startedAt: new Date(h.run.startedAt).toISOString(), stoppedAt: h.run.stoppedAt ? new Date(h.run.stoppedAt).toISOString() : null,
         // RUNNING in the database but not in memory means it is being resumed after a restart.
         status: l ? snap!.status : h.run.status === 'RUNNING' ? 'STARTING' : 'STOPPED',
@@ -248,14 +248,15 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       statusReason: live ? snap!.statusReason ?? null : run.statusReason,
       running: !!live,
       startedAt: new Date(started).toISOString(), stoppedAt: run.stoppedAt ? new Date(run.stoppedAt).toISOString() : null,
-      dailyReset: s.dailyReset ? {
+      // Every simulation resets daily (series started before that rule have their first reset at the next midnight).
+      dailyReset: {
         resets: run.resets ?? 0,
         lastAt: run.lastResetAt ? new Date(run.lastResetAt).toISOString() : null,
         nextAt: live ? new Date(lastResetBoundary(Date.now()) + DAY_MS).toISOString() : null,
         // What loops closed early by resets left behind: base sold and not bought back (positive) or bought and not sold back (negative).
         zigLeftOpen: (run.carriedBase ?? ZERO).neg().toFixed(),
         usdtLeftOpen: (run.carriedQuote ?? ZERO).toFixed(4),
-      } : null,
+      },
       settings: s,
       plan: {
         basePrice: run.basePrice.toFixed(), qty: run.qty.toFixed(), orders: s.orders,
@@ -371,11 +372,14 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       throw new ConflictException(status === 'STOPPED' ? 'Another instance is running this simulation.' : `The series halted at start: ${engine.snapshot().statusReason}`);
     }
     const s = run.settings;
+    // Daily reset is always on. A series started before that (its settings say off) is not reset
+    // for days it already ran: its first reset is the next midnight after this launch.
+    const resetFrom = s.dailyReset ? run.startedAt : Date.now();
     const watchdog = setInterval(() => {
       const snap = engine.snapshot();
       if (snap.status === 'HALTED' || snap.status === 'STOPPED') {
         void this.forget(run.id, engine);
-      } else if (s.dailyReset && (run.lastResetAt ?? run.startedAt) < lastResetBoundary(Date.now())) {
+      } else if ((run.lastResetAt ?? resetFrom) < lastResetBoundary(Date.now())) {
         void this.dailyReset(run.id, tag);
       } else if (s.maxCycles !== null && snap.cyclesCompleted >= s.maxCycles) {
         void this.stop(userId, run.id, tag, `reached ${s.maxCycles} completed loops`);
@@ -435,7 +439,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
       const zig = new Decimal(settings.totalZig);
       const usdt = new Decimal(settings.startUsdt);
       const run = await this.store.createRun({
-        ownerId: userId, mode: 'paper', settings: { ...settings, symbol, venue }, basePrice: plan.basePrice, qty: plan.qty,
+        ownerId: userId, mode: 'paper', settings: { ...settings, symbol, venue, dailyReset: true }, basePrice: plan.basePrice, qty: plan.qty,
         startZig: zig, startUsdt: usdt, startedAt: Date.now(),
       });
       try {

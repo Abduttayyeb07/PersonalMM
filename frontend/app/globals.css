@@ -243,6 +243,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .s-runs-total b { font-size: 16px; color: var(--ink); font-weight: 600; }
 @media (max-width: 720px) { .s-runs-total { margin-left: 0; text-align: left; width: 100%; } .s-run { min-width: 0; flex: 1 1 140px; } }
 
+/* Plain information box (the automatic daily reset). */
+.s-note { padding: 14px 16px; border-radius: 10px; background: var(--sunken); border: 1px solid var(--gold); font-size: 13px; color: var(--muted); line-height: 1.5; }
+.s-note b { display: block; color: var(--ink); font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+
 @media (max-width: 1180px) {
   .c-header-context { display: none; }
   .c-header-right { margin-left: auto; }
