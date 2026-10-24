@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { errorMessage, usd } from '../../lib/engine';
 import {
-  PAIRS, SeriesDirection, SeriesOverview, SeriesPreview, SeriesSettings, SeriesSymbol, SeriesVenue, pairFmt, previewSeries, seriesLabelFor, startSeries, venueName, words,
+  PAIRS, SeriesDirection, SeriesMode, SeriesOverview, SeriesPreview, SeriesSettings, SeriesSymbol, SeriesVenue, pairFmt, previewSeries, seriesLabelFor, startLiveSeries, startSeries, venueName, words,
 } from '../../lib/series';
 import { Card } from '../console/ui';
 
@@ -89,11 +89,17 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Real money is offered on the exchanges and pairs the server allows (MEXC ZIG/USDT for now).
+  const liveOffered = o.live.venues.includes(o.venue);
+  const [mode, setMode] = useState<SeriesMode>('paper');
+  const [password, setPassword] = useState('');
+  const isLive = liveOffered && mode === 'live';
   const set = (k: keyof Draft) => (v: string) => setDraft((d) => ({ ...d, [k]: v }));
   const nextLabel = seriesLabelFor(Math.max(0, ...o.runs.map((r) => r.seriesNo)) + 1);
   const fmt = pairFmt(draft.symbol);
   const w = words(draft.direction, fmt.asset);
-  const full = o.running >= o.maxRunning;
+  const full = isLive ? o.live.running > 0 : o.running >= o.maxRunning;
+  const liveBlocked = isLive && (!o.live.hasMexcKey || !o.live.symbols.includes(draft.symbol) || !password);
   const market = o.markets[draft.symbol];
   const rec = o.defaults[draft.symbol][draft.direction];
   const isRecommended = draft.firstSellPct === rec.firstSellPct && draft.stepPct === rec.stepPct && draft.buybackPct === rec.buybackPct
@@ -134,7 +140,8 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
     setBusy(true);
     setError(null);
     try {
-      const { data } = await startSeries(fromDraft(draft));
+      const { data } = isLive ? await startLiveSeries(fromDraft(draft), password) : await startSeries(fromDraft(draft));
+      setPassword('');
       onStarted(data.id);
     } catch (e) {
       setError(errorMessage(e, 'The series could not start.'));
@@ -153,8 +160,27 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
     <div className="c-grid-main">
       <Card title={`New ${venueName(o.venue)} simulation · Series ${nextLabel}`} sub={`Follows live ${venueName(o.venue)} prices, next to your other simulations, with its own paper wallet. ${o.running} of ${o.maxRunning} running on ${venueName(o.venue)}. Every order is a post-only limit order; nothing is sent at market.`}>
         <form onSubmit={submit} className="grid gap-7">
+          {liveOffered && (
+            <div className="c-segment" role="radiogroup" aria-label="Paper or real money">
+              <button type="button" role="radio" id="series-mode-paper" aria-checked={mode === 'paper'} onClick={() => setMode('paper')}>Paper (simulated)</button>
+              <button type="button" role="radio" id="series-mode-live" aria-checked={mode === 'live'} className="s-live-option"
+                      onClick={() => { setMode('live'); if (!o.live.symbols.includes(draft.symbol)) pick(o.live.symbols[0], draft.direction); }}>
+                LIVE · real money
+              </button>
+            </div>
+          )}
+          {isLive && (
+            <div className="s-live-warning" role="alert">
+              <b>Real orders on your MEXC account.</b>
+              Post-only limit orders with your own API key, on {o.live.symbols.map((x) => PAIRS[x].label).join(', ')} only. One live series at a time;
+              its wallet may be worth at most {o.live.maxUsdt} USDT, and your MEXC account must hold that amount free. Only this series&apos; orders
+              are ever touched; your other coins and manual orders are left alone. Stop cancels its orders on MEXC at once.
+              {!o.live.hasMexcKey && <span className="mt-2 block" style={{ color: 'var(--bad)' }}>Connect your MEXC API key under Exchange keys first.</span>}
+              {o.live.running > 0 && <span className="mt-2 block" style={{ color: 'var(--bad)' }}>A live series is already running. Stop it first.</span>}
+            </div>
+          )}
           <div className="c-segment s-pairs" role="radiogroup" aria-label="Pair">
-            {o.pairs.map((p) => p.symbol).map((sym) => (
+            {o.pairs.map((p) => p.symbol).filter((sym) => !isLive || o.live.symbols.includes(sym)).map((sym) => (
               <button key={sym} type="button" role="radio" id={`series-pair-${sym}`} aria-checked={draft.symbol === sym} onClick={() => pick(sym, draft.direction)}>
                 {PAIRS[sym].label}
                 {o.markets[sym] && <span className="num" style={{ marginLeft: 8, color: 'var(--muted)' }}>{pairFmt(sym).price(o.markets[sym]!)}</span>}
@@ -213,11 +239,20 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
           {previewError && <p className="c-error" role="alert">{previewError}</p>}
           {error && <p className="c-error" role="alert">{error}</p>}
           <div className="flex flex-wrap items-center gap-4">
-            <button type="submit" className="c-btn c-btn-primary" disabled={busy || full || !!previewError || !shown}>
-              {busy ? 'Starting…' : `Start ${fmt.label} · Series ${nextLabel} (${w.name.toLowerCase()})`}
+            {isLive && (
+              <div className="c-field w-full sm:max-w-[360px]">
+                <label htmlFor="series-live-password">Your account password (to confirm real money)</label>
+                <input id="series-live-password" type="password" autoComplete="current-password" className="c-input"
+                       value={password} onChange={(e) => setPassword(e.target.value)} />
+              </div>
+            )}
+            <button type="submit" className={`c-btn ${isLive ? 'c-btn-danger' : 'c-btn-primary'}`} disabled={busy || full || liveBlocked || !!previewError || !shown}>
+              {busy ? 'Starting…' : isLive ? `Start LIVE ${fmt.label} with real money (${w.name.toLowerCase()})` : `Start ${fmt.label} · Series ${nextLabel} (${w.name.toLowerCase()})`}
             </button>
-            <span className="text-[13px]" style={{ color: full ? 'var(--bad)' : 'var(--muted)' }}>
-              {full ? `${o.maxRunning} simulations are running on ${venueName(o.venue)}, the most at once. Stop one to start another.` : `Paper trading on live ${venueName(o.venue)} prices. No real orders.`}
+            <span className="text-[13px]" style={{ color: full || isLive ? 'var(--bad)' : 'var(--muted)' }}>
+              {isLive
+                ? (full ? 'A live series is already running. Stop it first.' : 'Real orders on your MEXC account with your API key.')
+                : full ? `${o.maxRunning} simulations are running on ${venueName(o.venue)}, the most at once. Stop one to start another.` : `Paper trading on live ${venueName(o.venue)} prices. No real orders.`}
             </span>
           </div>
         </form>

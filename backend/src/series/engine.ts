@@ -171,6 +171,12 @@ export class SeriesEngine {
       this.status = 'RUNNING';
       this.book = await this.d.venue.getBook().catch(() => null);
       if (this.book) this.lastMarketTs = this.d.clock.now();
+      // After a restart, book what filled while we were down before placing anything (on a real
+      // exchange the old orders may have traded in the meantime).
+      if (resume) {
+        await this.syncMissedFills();
+        if ((this.status as SeriesStatus) !== 'RUNNING') return this.status;
+      }
       await this.drive();
       return this.status;
     });

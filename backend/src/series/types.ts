@@ -131,7 +131,8 @@ export interface SeriesCycle {
 export interface SeriesRun {
   id: string;
   ownerId: string;
-  mode: 'paper' | 'backtest';
+  /** live = real orders on the exchange with the user's own API key. */
+  mode: 'paper' | 'backtest' | 'live';
   seriesNo: number;
   settings: SeriesSettings;
   basePrice: Decimal;

@@ -101,6 +101,7 @@ function RunBar({ o, selectedId, onSelect, onNew }: { o: SeriesOverview; selecte
                   <span className="s-run-top">
                     <i style={{ background: st.color }} aria-hidden />
                     <b>{pairFmt(r.symbol).asset}</b> · Series {r.label}
+                    {r.mode === 'live' && <span className="s-live-tag">LIVE</span>}
                   </span>
                   <span className="s-run-sub">
                     <span style={{ color: r.direction === 'BUY_FIRST' ? 'var(--buy)' : 'var(--sell)' }}>{words(r.direction).name}</span>
@@ -191,7 +192,7 @@ export default function SeriesConsole() {
               {venueName(venue)} {fmt.label} <span className="num" style={{ color: 'var(--ink)' }}>{fmt.price(market)}</span>
             </span>
           )}
-          <span className="c-mode-badge">Paper</span>
+          {s?.mode === 'live' ? <span className="c-mode-badge s-live-badge">LIVE · real money</span> : <span className="c-mode-badge">Paper</span>}
           <span className="c-avatar" title={email ?? ''}>{(email ?? '?')[0].toUpperCase()}</span>
           <button type="button" className="c-link" onClick={logout}>Sign out</button>
         </div>

@@ -44,7 +44,7 @@ export function ControlBar({ s, now, onChanged, onNew, onCopied }: {
       <div className="c-control-state">
         <span className="c-dot" aria-hidden style={{ background: status.color, boxShadow: s.running ? '0 0 0 4px rgba(63,208,143,.15)' : undefined }} />
         <div>
-          <b>{`${venueName(s.venue)} · ${fmt.label} · Series ${s.label} · ${status.label}`}</b>
+          <b>{s.mode === 'live' && <span className="s-live-tag" style={{ marginLeft: 0, marginRight: 8 }}>LIVE</span>}{`${venueName(s.venue)} · ${fmt.label} · Series ${s.label} · ${status.label}`}</b>
           <small>
             {active && `${words(s.direction).name} · base ${fmt.price(s.plan.basePrice)} · started ${ago(s.startedAt, now)} · ${s.statusReason ?? status.help}`}
             {!active && `Ended ${s.stoppedAt ? ago(s.stoppedAt, now) : ''}${s.statusReason ? `: ${s.statusReason}` : ''}`}

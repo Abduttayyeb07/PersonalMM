@@ -6,7 +6,7 @@ import {
 } from './store';
 import { Slot, SeriesCycle, SeriesRun, SeriesSettings } from './types';
 
-type Mode = 'paper' | 'backtest';
+type Mode = 'paper' | 'backtest' | 'live';
 
 const toRun = (r: any): SeriesRun => ({
   id: r.id, ownerId: r.owner_id, mode: r.mode, seriesNo: r.series_no, settings: r.settings as SeriesSettings,

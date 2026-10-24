@@ -16,10 +16,10 @@ export interface SeriesStore {
   recordReset(runId: string, r: { basePrice: Decimal; qty: Decimal; at: number; carriedBase: Decimal; carriedQuote: Decimal }): Promise<void>;
   getRun(runId: string): Promise<SeriesRun | null>;
   /** Latest run for a user and mode, or null. */
-  latestRun(ownerId: string, mode: 'paper' | 'backtest'): Promise<SeriesRun | null>;
-  listRuns(ownerId: string, mode: 'paper' | 'backtest', limit: number): Promise<SeriesRun[]>;
+  latestRun(ownerId: string, mode: 'paper' | 'backtest' | 'live'): Promise<SeriesRun | null>;
+  listRuns(ownerId: string, mode: 'paper' | 'backtest' | 'live', limit: number): Promise<SeriesRun[]>;
   /** Marks every RUNNING run of this mode as stopped (the process that owned it is gone). */
-  stopOrphans(mode: 'paper' | 'backtest', reason: string): Promise<number>;
+  stopOrphans(mode: 'paper' | 'backtest' | 'live', reason: string): Promise<number>;
   saveSlots(runId: string, slots: Slot[]): Promise<void>;
   loadSlots(runId: string): Promise<Slot[]>;
   hasFill(runId: string, fillId: string): Promise<boolean>;

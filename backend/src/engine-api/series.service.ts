@@ -17,6 +17,17 @@ import {
   isSeriesVenue, orderKind, seriesLabel, symbolOf, venueOf,
 } from '../series/types';
 import { EngineApiService } from './engine-api.service';
+import { CredentialsService } from '../credentials/credentials.service';
+import { MexcLiveVenue } from '../engine/venue/mexc-live-venue';
+import { VenueAdapter } from '../engine/venue/venue';
+
+/**
+ * Real-money trading: which exchange and pairs are allowed, and the most one live simulation may
+ * hold (its wallet's value in USDT at start). Raise LIVE_MAX_USDT on the server to allow more.
+ */
+export const LIVE_VENUES: SeriesVenue[] = ['MEXC'];
+export const LIVE_SYMBOLS: SeriesSymbol[] = ['ZIGUSDT'];
+export const liveMaxUsdt = () => new Decimal(process.env.LIVE_MAX_USDT || '300');
 
 const ZERO = new Decimal(0);
 const LEASE_TTL_SECONDS = 30;
@@ -36,7 +47,7 @@ interface Live {
   run: SeriesRun;
   engine: SeriesEngine;
   runner: SeriesRunner;
-  venue: PaperVenue;
+  venue: VenueAdapter;
   specs: VenueSpecs;
   watchdog: NodeJS.Timeout;
 }
@@ -105,7 +116,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   readonly store: PgSeriesStore;
   private readonly holder = `app:${hostname()}`;
 
-  constructor(private readonly api: EngineApiService) {
+  constructor(private readonly api: EngineApiService, private readonly credentials: CredentialsService) {
     this.store = new PgSeriesStore(api.pool);
   }
 
@@ -148,12 +159,16 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
 
   /** Every simulation of the user (running ones first), with the numbers a tab or a history row needs. */
   async overview(userId: string) {
-    const [rows, markets] = await Promise.all([this.store.runSummaries(userId, 'paper', 50), this.marketPrices()]);
+    const [paperRows, liveRows, markets, keys] = await Promise.all([
+      this.store.runSummaries(userId, 'paper', 50), this.store.runSummaries(userId, 'live', 20), this.marketPrices(),
+      this.credentials.listConnected(userId).catch(() => [] as Array<{ exchange: string }>),
+    ]);
+    const rows = [...liveRows, ...paperRows].sort((a, b) => b.run.startedAt - a.run.startedAt);
     const runs = rows.map((h) => {
       const l = this.live.get(h.run.id);
       const snap = l?.engine.snapshot();
       return {
-        id: h.run.id, label: seriesLabel(h.run.seriesNo), seriesNo: h.run.seriesNo,
+        id: h.run.id, label: seriesLabel(h.run.seriesNo), seriesNo: h.run.seriesNo, mode: h.run.mode,
         symbol: symbolOf(h.run.settings), venue: venueOf(h.run.settings), asset: assetOf(h.run.settings), direction: directionOf(h.run.settings),
         basePrice: h.run.basePrice.toFixed(), qty: h.run.qty.toFixed(), orders: h.run.settings.orders, totalZig: h.run.settings.totalZig,
         startUsdt: h.run.settings.startUsdt, dailyReset: true,
@@ -167,7 +182,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     });
     // Per exchange: its pairs, default settings, and its own running count, limit and profit.
     const venues = (Object.keys(VENUE_PAIRS) as SeriesVenue[]).map((venue) => {
-      const mine = runs.filter((r) => r.venue === venue);
+      const mine = runs.filter((r) => r.venue === venue && r.mode !== 'live');
       const running = mine.filter((r) => r.status !== 'STOPPED');
       const defaults: Record<string, Record<string, SeriesSettings>> = {};
       for (const symbol of VENUE_PAIRS[venue]) {
@@ -181,7 +196,16 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
         defaults,
       };
     });
-    return { runs, venues, markets };
+    const liveRuns = runs.filter((r) => r.mode === 'live');
+    return {
+      runs, venues, markets,
+      live: {
+        venues: LIVE_VENUES, symbols: LIVE_SYMBOLS, maxUsdt: liveMaxUsdt().toFixed(),
+        hasMexcKey: keys.some((k) => k.exchange === 'mexc'),
+        running: liveRuns.filter((r) => r.status !== 'STOPPED').length,
+        totalProfit: liveRuns.reduce((n, r) => n.plus(r.profit), ZERO).toFixed(4),
+      },
+    };
   }
 
   /** One of the user's simulations in full. Another user's id is reported as not found. */
@@ -242,7 +266,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     const hours = Math.max((ended - started) / 3_600_000, 1 / 60);
     const s = run.settings;
     return {
-      id: run.id, label: seriesLabel(run.seriesNo), seriesNo: run.seriesNo, direction,
+      id: run.id, label: seriesLabel(run.seriesNo), seriesNo: run.seriesNo, direction, mode: run.mode,
       symbol: symbolOf(s), venue: venueOf(s), asset: assetOf(s),
       status: live ? snap!.status : run.status === 'RUNNING' ? 'STARTING' : 'STOPPED',
       statusReason: live ? snap!.statusReason ?? null : run.statusReason,
@@ -354,12 +378,32 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     const plan = buildPlan(run.settings, price, specs);
     // The plan's base and size are fixed when the series starts; a resume keeps them.
     const fixedPlan = { ...plan, basePrice: run.basePrice, qty: run.qty };
-    const log = this.engineLog(tag);
-    // Each simulation has its own paper wallet: its own venue, balances and orders.
-    const venue = new PaperVenue({
-      symbol, specs, clock: systemClock, log, startPrice: price, feed,
-      startBase: balances.zig, startQuote: balances.usdt, idPrefix: `p${Date.now().toString(36)}${run.seriesNo}`,
-    });
+    const log = this.engineLog(run.mode === 'live' ? `${tag} LIVE` : tag);
+    let venue: VenueAdapter;
+    if (run.mode === 'live') {
+      // Real orders with the user's own MEXC key. Only this run's orders are ever touched.
+      const creds = await this.credentials.getDecrypted(userId, 'mexc');
+      const fills = await this.store.listFills(run.id);
+      const lastFill = fills.reduce((m, f) => Math.max(m, f.ts), 0);
+      const live = new MexcLiveVenue({
+        symbol, baseAsset: assetOf(run.settings), quoteAsset: 'USDT', specs, apiKey: creds.apiKey, apiSecret: creds.apiSecret,
+        clock: systemClock, log,
+        owns: (id) => { const p = parseSeriesOrderId(id); return !!p && p.symbol === symbol && p.seriesNo === run.seriesNo; },
+        wallet: { base: balances.zig, quote: balances.usdt },
+        knownFillIds: fills.map((f) => f.fillId),
+        fillsFrom: (lastFill || run.startedAt) - 60_000,
+      });
+      // After a restart the old orders are still on MEXC: cancel them first. The engine then books
+      // whatever filled while it was down and places the ladder again.
+      if (resume) await live.cancelAll();
+      venue = live;
+    } else {
+      // Each simulation has its own paper wallet: its own venue, balances and orders.
+      venue = new PaperVenue({
+        symbol, specs, clock: systemClock, log, startPrice: price, feed,
+        startBase: balances.zig, startQuote: balances.usdt, idPrefix: `p${Date.now().toString(36)}${run.seriesNo}`,
+      });
+    }
     const engine = new SeriesEngine({
       run, plan: fixedPlan, specs, venue, store: this.store, lease: new PgLease(this.api.pool),
       leaseScope: this.leaseScope(userId, run.id), holder: this.holder, clock: systemClock, log, alert: this.quietAlerts(tag),
@@ -457,6 +501,67 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   /**
+   * Starts a REAL-MONEY series on the user's own MEXC account. Guarded: MEXC and the allowed pairs
+   * only, one live series per user, a USDT cap on its wallet, and the real account must hold the
+   * wallet's amounts free. The caller has already re-checked the account password.
+   */
+  async startLive(userId: string, email: string, settings: SeriesSettings) {
+    const venue = venueOf(settings);
+    const symbol = symbolOf(settings);
+    if (!LIVE_VENUES.includes(venue)) throw new BadRequestException('Real-money trading is available on MEXC only');
+    if (!LIVE_SYMBOLS.includes(symbol)) throw new BadRequestException(`Real-money trading is available on ${LIVE_SYMBOLS.join(', ')} only`);
+    const key = `${userId}:LIVE`;
+    if (this.starting.has(key)) throw new ConflictException('A live series is already starting');
+    this.starting.set(key, 1);
+    try {
+      const running = (await this.store.runSummaries(userId, 'live', 20)).filter((h) => h.run.status === 'RUNNING');
+      if (running.length) throw new ConflictException(`Live Series ${seriesLabel(running[0].run.seriesNo)} is already running. Stop it first.`);
+      let creds: { apiKey: string; apiSecret: string };
+      try {
+        creds = await this.credentials.getDecrypted(userId, 'mexc');
+      } catch {
+        throw new BadRequestException('Connect your MEXC API key under Exchange keys first');
+      }
+      const { specs, price } = await this.market(venue, symbol);
+      const plan = this.plan(settings, price, specs);
+      const zig = new Decimal(settings.totalZig);
+      const usdt = new Decimal(settings.startUsdt);
+      const value = usdt.plus(zig.mul(price));
+      if (value.gt(liveMaxUsdt())) {
+        throw new BadRequestException(`This live wallet is worth about ${value.toFixed(2)} USDT; the limit is ${liveMaxUsdt().toFixed()} USDT. Use a smaller amount.`);
+      }
+      // The real account must hold the wallet's amounts free (not locked in other orders).
+      const probe = new MexcLiveVenue({
+        symbol, baseAsset: assetOf(settings), quoteAsset: 'USDT', specs, apiKey: creds.apiKey, apiSecret: creds.apiSecret,
+        clock: systemClock, log: this.engineLog('probe'), owns: () => false, wallet: { base: ZERO, quote: ZERO },
+      });
+      let account;
+      try {
+        account = await probe.getAccountBalances();
+      } catch (e) {
+        throw new BadRequestException(`MEXC did not accept the API key: ${(e as Error).message}. Check its permissions (Spot: view account, view orders, trade) and the server IP.`);
+      }
+      const asset = assetOf(settings);
+      if (account.quoteFree.lt(usdt)) throw new BadRequestException(`Your MEXC account has ${account.quoteFree.toFixed(2)} USDT free; this series needs ${usdt.toFixed(2)}.`);
+      if (account.baseFree.lt(zig)) throw new BadRequestException(`Your MEXC account has ${account.baseFree.toFixed()} ${asset} free; this series needs ${zig.toFixed()}.`);
+      const run = await this.store.createRun({
+        ownerId: userId, mode: 'live', settings: { ...settings, symbol, venue, dailyReset: true }, basePrice: plan.basePrice, qty: plan.qty,
+        startZig: zig, startUsdt: usdt, startedAt: Date.now(),
+      });
+      try {
+        await this.launch(userId, email, run, specs, price, { zig, usdt });
+      } catch (e) {
+        await this.store.stopRun(run.id, `could not start: ${(e as Error).message}`);
+        throw e;
+      }
+      this.logger.warn(`[${email}] LIVE MEXC ${symbol} series ${seriesLabel(run.seriesNo)} started at base ${plan.basePrice.toFixed()} with ${usdt.toFixed()} USDT + ${zig.toFixed()} ${asset}`);
+      return { id: run.id, ...(await this.overview(userId)) };
+    } finally {
+      this.starting.delete(key);
+    }
+  }
+
+  /**
    * Starts the same simulation on the other exchange: same pair, direction, wallet, order count,
    * percentages and daily reset, and the same base price as the original has now, so the orders sit
    * at the same prices (rounded to that exchange's price step). The copy is independent.
@@ -500,7 +605,7 @@ export class SeriesService implements OnApplicationBootstrap, OnModuleDestroy {
     if (process.env.NODE_ENV === 'test') return;
     let runs: SeriesRun[];
     try {
-      runs = await this.store.runningRuns('paper');
+      runs = [...(await this.store.runningRuns('live')), ...(await this.store.runningRuns('paper'))];
     } catch (e) {
       this.logger.error(`could not list running series: ${(e as Error).message}`);
       return;

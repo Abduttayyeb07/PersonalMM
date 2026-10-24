@@ -104,6 +104,7 @@ export interface SeriesDetail {
   id: string;
   label: string;
   seriesNo: number;
+  mode: SeriesMode;
   symbol: SeriesSymbol;
   venue: SeriesVenue;
   asset: string;
@@ -139,7 +140,7 @@ export interface SeriesDetail {
 
 /** One simulation as a tab or a history row shows it. */
 export interface SeriesRunSummary {
-  id: string; label: string; seriesNo: number; symbol: SeriesSymbol; venue: SeriesVenue; asset: string; direction: SeriesDirection;
+  id: string; label: string; seriesNo: number; mode: SeriesMode; symbol: SeriesSymbol; venue: SeriesVenue; asset: string; direction: SeriesDirection;
   basePrice: string; qty: string; orders: number; totalZig: string; startUsdt: string; dailyReset: boolean;
   startedAt: string; stoppedAt: string | null;
   status: SeriesStatus; statusReason: string | null; live: boolean; openOrders: number;
@@ -156,6 +157,21 @@ export interface SeriesOverviewResponse {
   }>;
   /** Last prices keyed "BYBIT:ZIGUSDT". */
   markets: Record<string, string | null>;
+  live: LiveInfo;
+}
+
+/** Paper: simulated fills with a paper wallet. Live: real orders on the user's own MEXC account. */
+export type SeriesMode = 'paper' | 'live';
+
+/** What real-money trading allows for this user right now. */
+export interface LiveInfo {
+  venues: SeriesVenue[];
+  symbols: SeriesSymbol[];
+  /** Most a live wallet may be worth, in USDT. */
+  maxUsdt: string;
+  hasMexcKey: boolean;
+  running: number;
+  totalProfit: string;
 }
 
 /** One exchange's slice of the overview: its simulations, pairs, prices, limit and totals. */
@@ -170,6 +186,7 @@ export interface SeriesOverview {
   /** Last prices on this exchange, by symbol. */
   markets: Record<string, string | null>;
   defaults: Record<string, Record<SeriesDirection, SeriesSettings>>;
+  live: LiveInfo;
 }
 
 export function venueView(o: SeriesOverviewResponse, venue: SeriesVenue): SeriesOverview {
@@ -179,7 +196,7 @@ export function venueView(o: SeriesOverviewResponse, venue: SeriesVenue): Series
     const [ex, sym] = key.split(':');
     if (ex === v.venue) markets[sym] = price;
   }
-  return { ...v, runs: o.runs.filter((r) => (r.venue ?? 'BYBIT') === v.venue), markets };
+  return { ...v, runs: o.runs.filter((r) => (r.venue ?? 'BYBIT') === v.venue), markets, live: o.live };
 }
 
 export interface SeriesPreview {
@@ -202,6 +219,9 @@ export interface SeriesPreview {
 }
 
 export const getSeries = () => api.get<SeriesOverviewResponse>('/series');
+/** Real money on the user's MEXC account. Needs the account password again. */
+export const startLiveSeries = (settings: SeriesSettings, accountPassword: string) =>
+  api.post<SeriesOverviewResponse & { id: string }>('/series/start-live', { settings, accountPassword });
 export const getSeriesDetail = (id: string) => api.get<SeriesDetail>(`/series/${id}`);
 export const previewSeries = (settings: SeriesSettings) => api.post<SeriesPreview>('/series/preview', { settings });
 export const startSeries = (settings: SeriesSettings) => api.post<SeriesOverviewResponse & { id: string }>('/series/start', { settings });

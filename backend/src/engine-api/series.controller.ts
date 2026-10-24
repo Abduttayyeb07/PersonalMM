@@ -1,7 +1,8 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Req, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsNumber, IsNumberString, IsOptional, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsNumber, IsNumberString, IsOptional, IsString, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { AuthService } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SERIES_PAIRS, SeriesSymbol, SeriesVenue } from '../series/types';
 import { SeriesService } from './series.service';
@@ -28,6 +29,11 @@ class SeriesSettingsDto {
   @ValidateIf((o) => o.maxHours !== null) @IsNumber() @Min(0.01) @Max(2160) maxHours!: number | null;
 }
 
+class SeriesStartLiveDto {
+  @ValidateNested() @Type(() => SeriesSettingsDto) settings!: SeriesSettingsDto;
+  @IsString() @IsNotEmpty() @MaxLength(256) accountPassword!: string;
+}
+
 class SeriesStartDto {
   @ValidateNested() @Type(() => SeriesSettingsDto) settings!: SeriesSettingsDto;
 }
@@ -36,7 +42,7 @@ class SeriesStartDto {
 @UseGuards(JwtAuthGuard)
 @Controller('series')
 export class SeriesController {
-  constructor(private readonly series: SeriesService) {}
+  constructor(private readonly series: SeriesService, private readonly auth: AuthService) {}
 
   @Get()
   overview(@Req() req: any) {
@@ -54,6 +60,15 @@ export class SeriesController {
   @HttpCode(200)
   start(@Req() req: any, @Body() dto: SeriesStartDto) {
     return this.series.start(req.user.id, req.user.email, dto.settings);
+  }
+
+  /** Real money on the user's MEXC account: needs the account password again. */
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @Post('start-live')
+  @HttpCode(200)
+  async startLive(@Req() req: any, @Body() dto: SeriesStartLiveDto) {
+    await this.auth.verifyPassword(req.user.id, dto.accountPassword);
+    return this.series.startLive(req.user.id, req.user.email, dto.settings);
   }
 
   /** One of the user's simulations in full. */

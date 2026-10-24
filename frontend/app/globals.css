@@ -247,6 +247,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .s-note { padding: 14px 16px; border-radius: 10px; background: var(--sunken); border: 1px solid var(--gold); font-size: 13px; color: var(--muted); line-height: 1.5; }
 .s-note b { display: block; color: var(--ink); font-size: 14px; font-weight: 600; margin-bottom: 2px; }
 
+/* Real money: red, so it is never mistaken for paper. */
+.s-live-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: var(--bad-strong); color: #fff; font-size: 10px; font-weight: 800; letter-spacing: .06em; }
+.s-live-badge { border-color: var(--bad-strong); background: rgba(229, 72, 77, .18); color: var(--bad); }
+.c-segment button.s-live-option[aria-checked='true'] { background: rgba(229, 72, 77, .25); color: #fff; }
+.s-live-warning { padding: 14px 16px; border-radius: 10px; border: 1px solid var(--bad-strong); background: rgba(229, 72, 77, .08); font-size: 13px; color: var(--ink-2); line-height: 1.55; }
+.s-live-warning b { display: block; color: var(--bad); font-size: 14px; margin-bottom: 4px; }
+
 @media (max-width: 1180px) {
   .c-header-context { display: none; }
   .c-header-right { margin-left: auto; }

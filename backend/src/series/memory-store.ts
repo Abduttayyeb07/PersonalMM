@@ -42,13 +42,13 @@ export class MemorySeriesStore implements SeriesStore {
   }
 
   async getRun(runId: string) { return this.runs.get(runId) ?? null; }
-  async latestRun(ownerId: string, mode: 'paper' | 'backtest') {
+  async latestRun(ownerId: string, mode: 'paper' | 'backtest' | 'live') {
     return (await this.listRuns(ownerId, mode, 1))[0] ?? null;
   }
-  async listRuns(ownerId: string, mode: 'paper' | 'backtest', limit: number) {
+  async listRuns(ownerId: string, mode: 'paper' | 'backtest' | 'live', limit: number) {
     return [...this.runs.values()].filter((r) => r.ownerId === ownerId && r.mode === mode).sort((a, b) => b.seriesNo - a.seriesNo).slice(0, limit);
   }
-  async stopOrphans(mode: 'paper' | 'backtest', reason: string) {
+  async stopOrphans(mode: 'paper' | 'backtest' | 'live', reason: string) {
     let n = 0;
     for (const r of this.runs.values()) if (r.mode === mode && r.status === 'RUNNING') { r.status = 'STOPPED'; r.statusReason = reason; r.stoppedAt = this.now(); n++; }
     return n;
