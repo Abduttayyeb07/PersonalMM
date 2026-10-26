@@ -6,6 +6,7 @@ import {
   PAIRS, SeriesDirection, SeriesMode, SeriesOverview, SeriesPreview, SeriesSettings, SeriesSymbol, SeriesVenue, pairFmt, previewSeries, seriesLabelFor, startLiveSeries, startSeries, venueName, words,
 } from '../../lib/series';
 import { Card } from '../console/ui';
+import { useMexcBalances } from '../MexcBalances';
 
 type Draft = Record<'basePrice' | 'totalZig' | 'startUsdt' | 'sellPct' | 'orders' | 'firstSellPct' | 'stepPct' | 'buybackPct' | 'resellPct' | 'maxHours', string> & {
   direction: SeriesDirection;
@@ -94,6 +95,7 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
   const [mode, setMode] = useState<SeriesMode>('paper');
   const [password, setPassword] = useState('');
   const isLive = liveOffered && mode === 'live';
+  const account = useMexcBalances(isLive && o.live.hasMexcKey, 10_000);
   const set = (k: keyof Draft) => (v: string) => setDraft((d) => ({ ...d, [k]: v }));
   const nextLabel = seriesLabelFor(Math.max(0, ...o.runs.map((r) => r.seriesNo)) + 1);
   const fmt = pairFmt(draft.symbol);
@@ -177,6 +179,22 @@ export function NewSeriesPage({ o, onStarted }: { o: SeriesOverview; onStarted: 
               are ever touched; your other coins and manual orders are left alone. Stop cancels its orders on MEXC at once.
               {!o.live.hasMexcKey && <span className="mt-2 block" style={{ color: 'var(--bad)' }}>Connect your MEXC API key under Exchange keys first.</span>}
               {o.live.running > 0 && <span className="mt-2 block" style={{ color: 'var(--bad)' }}>A live series is already running. Stop it first.</span>}
+              {o.live.hasMexcKey && (
+                <span className="mt-3 block num" style={{ color: 'var(--ink)' }}>
+                  {account.error
+                    ? <span style={{ color: 'var(--bad)' }}>{account.error}</span>
+                    : account.rows
+                      ? <>Your MEXC spot now: <b>{account.find('USDT').free.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT</b> free
+                          {' · '}<b>{account.find(fmt.asset).free.toLocaleString('en-US', { maximumFractionDigits: 2 })} {fmt.asset}</b> free</>
+                      : 'Reading your MEXC balances…'}
+                </span>
+              )}
+              {account.rows && w.buy && account.find('USDT').free < Number(draft.startUsdt || 0) && (
+                <span className="mt-2 block" style={{ color: 'var(--bad)' }}>Not enough free USDT on MEXC for {draft.startUsdt} USDT. Move USDT to Spot or lower the amount.</span>
+              )}
+              {account.rows && !w.buy && account.find(fmt.asset).free < Number(draft.totalZig || 0) && (
+                <span className="mt-2 block" style={{ color: 'var(--bad)' }}>Not enough free {fmt.asset} on MEXC for {draft.totalZig}. Move {fmt.asset} to Spot or lower the amount.</span>
+              )}
             </div>
           )}
           <div className="c-segment s-pairs" role="radiogroup" aria-label="Pair">

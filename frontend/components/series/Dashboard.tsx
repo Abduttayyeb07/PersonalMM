@@ -7,6 +7,7 @@ import { PairFmt, STATUS_INFO, SeriesDetail, SeriesVenue, copySeries, otherVenue
 import { AreaChart, useWidth } from '../console/charts';
 import { Card, ConfirmDialog, Empty, KV } from '../console/ui';
 import { ActivityList, FillsTable, KindPill } from './Tables';
+import { MexcBalances } from '../MexcBalances';
 
 export function midOf(s: SeriesDetail | null, market: string | null | undefined): number | null {
   if (s?.book) return (Number(s.book.bestBid) + Number(s.book.bestAsk)) / 2;
@@ -194,6 +195,9 @@ export function DashboardPage({ s, market }: { s: SeriesDetail; market: string |
               <KV label={Number(s.dailyReset.zigLeftOpen) > 0 ? `${fmt.asset} left sold by resets` : `${fmt.asset} left bought by resets`} value={fmt.amount(Math.abs(Number(s.dailyReset.zigLeftOpen)))} />
             )}
           </Card>
+          {s.mode === 'live' && s.venue === 'MEXC' && (
+            <MexcBalances zigPrice={s.symbol === 'ZIGUSDT' ? mid : null} title="Your whole MEXC spot account (live)" />
+          )}
           <Card title="Activity">
             <ActivityList events={s.events} limit={6} asset={fmt.asset} />
           </Card>

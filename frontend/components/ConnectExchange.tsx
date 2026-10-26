@@ -3,13 +3,14 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { listCredentials, removeCredentials, saveCredentials, testCredentials } from '../lib/api';
 import { errorMessage } from '../lib/engine';
+import { MexcBalances } from './MexcBalances';
 
 type Exchange = 'bybit' | 'mexc';
 type CredentialInfo = { exchange: Exchange; keyHint: string | null; createdAt: string; updatedAt: string };
 
 const META: Record<Exchange, { name: string; note: string }> = {
   bybit: { name: 'Bybit', note: 'Spot. The grid engine trades here.' },
-  mexc: { name: 'MEXC', note: 'Spot. Stored for later use.' },
+  mexc: { name: 'MEXC', note: 'Spot. Used for LIVE (real-money) series on ZIG/USDT.' },
 };
 
 /** Secret inputs never leave component state and are cleared after every submission. */
@@ -102,6 +103,7 @@ function ExchangeCard({ exchange, connected, refresh }: { exchange: Exchange; co
             Key <span className="num" style={{ color: 'var(--ink)' }}>{connected.keyHint ?? 'stored securely'}</span>
             <p className="mt-1 text-[13px]">Connected {new Date(connected.createdAt).toLocaleString()}</p>
           </div>
+          {exchange === 'mexc' && <MexcBalances />}
           {disconnecting && <SecretInput id={`${exchange}-pw`} label="Account password" value={password} onChange={setPassword} />}
           <div className="flex flex-wrap gap-3">
             <button type="button" onClick={test} disabled={busy} className="c-btn c-btn-ghost">Test connection</button>

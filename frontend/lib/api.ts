@@ -21,3 +21,8 @@ export const listCredentials = () => api.get('/credentials');
 export const removeCredentials = (exchange: 'mexc' | 'bybit', accountPassword: string) =>
   api.delete(`/credentials/${exchange}`, { data: { accountPassword } });
 export const testCredentials = (exchange: 'mexc' | 'bybit') => api.post(`/credentials/${exchange}/test`);
+
+/** One coin in the user's MEXC spot account (only coins with a balance are listed). */
+export interface MexcBalance { asset: string; free: number; locked: number }
+/** Read live from MEXC with the user's own key; nothing is stored. */
+export const getMexcBalances = () => api.get<MexcBalance[]>('/mexc/balances');
