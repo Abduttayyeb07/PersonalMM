@@ -33,6 +33,7 @@ COPY --from=builder /app/pairs ./pairs
 COPY --from=builder /app/sql ./sql
 # Admin helper: create a login (no public sign-up)
 COPY --from=builder /app/scripts/create-user.js ./scripts/create-user.js
+COPY --from=builder /app/scripts/start-all.js ./scripts/start-all.js
 
 EXPOSE 3069
 
